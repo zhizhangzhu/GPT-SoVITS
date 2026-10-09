@@ -3,6 +3,7 @@ import os
 import traceback
 
 import gradio as gr
+from tools.assets import css, js, theme, top_html, workspace_header
 
 from tools.i18n.i18n import I18nAuto
 from tools.my_utils import clean_path
@@ -125,15 +126,11 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins, agg, format
     yield "\n".join(infos)
 
 
-with gr.Blocks(title="UVR5 WebUI", analytics_enabled=False) as app:
-    gr.Markdown(
-        value=i18n("本软件以MIT协议开源, 作者不对软件具备任何控制力, 使用软件者、传播软件导出的声音者自负全责.")
-        + "<br>"
-        + i18n("如不认可该条款, 则不能使用或引用软件包内任何代码和文件. 详见根目录LICENSE.")
-    )
-    with gr.Group():
-        gr.Markdown(html_center(i18n("伴奏人声分离&去混响&去回声"), "h2"))
-        with gr.Group():
+with gr.Blocks(title="GPT-SoVITS · 人声分离", analytics_enabled=False, theme=theme, css=css, js=js, fill_width=True) as app:
+    gr.HTML(top_html.format("人声分离工具 · 输入素材，选择模型并导出人声与伴奏。"))
+    with gr.Group(elem_classes="standalone-panel"):
+        gr.HTML(workspace_header("人声分离 · UVR5", "准备干净的人声素材，或对音频进行去混响与去回声处理。"))
+        with gr.Accordion("模型选择说明", open=False):
             gr.Markdown(
                 value=html_left(
                     i18n("人声伴奏分离批量处理， 使用UVR5模型。")
@@ -168,53 +165,53 @@ with gr.Blocks(title="UVR5 WebUI", analytics_enabled=False) as app:
                     "h4",
                 )
             )
-            with gr.Row():
-                with gr.Column():
-                    model_choose = gr.Dropdown(label=i18n("模型"), choices=uvr5_names)
-                    dir_wav_input = gr.Textbox(
-                        label=i18n("输入待处理音频文件夹路径"),
-                        placeholder="C:\\Users\\Desktop\\todo-songs",
-                    )
-                    wav_inputs = gr.File(
-                        file_count="multiple", label=i18n("也可批量输入音频文件, 二选一, 优先读文件夹")
-                    )
-                with gr.Column():
-                    agg = gr.Slider(
-                        minimum=0,
-                        maximum=20,
-                        step=1,
-                        label=i18n("人声提取激进程度"),
-                        value=10,
-                        interactive=True,
-                        visible=False,  # 先不开放调整
-                    )
-                    opt_vocal_root = gr.Textbox(label=i18n("指定输出主人声文件夹"), value="output/uvr5_opt")
-                    opt_ins_root = gr.Textbox(label=i18n("指定输出非主人声文件夹"), value="output/uvr5_opt")
-                    format0 = gr.Radio(
-                        label=i18n("导出文件格式"),
-                        choices=["wav", "flac", "mp3", "m4a"],
-                        value="flac",
-                        interactive=True,
-                    )
-                    with gr.Column():
-                        with gr.Row():
-                            but2 = gr.Button(i18n("转换"), variant="primary")
-                        with gr.Row():
-                            vc_output4 = gr.Textbox(label=i18n("输出信息"), lines=3)
-                but2.click(
-                    uvr,
-                    [
-                        model_choose,
-                        dir_wav_input,
-                        opt_vocal_root,
-                        wav_inputs,
-                        opt_ins_root,
-                        agg,
-                        format0,
-                    ],
-                    [vc_output4],
-                    api_name="uvr_convert",
+        with gr.Row():
+            with gr.Column():
+                model_choose = gr.Dropdown(label=i18n("模型"), choices=uvr5_names)
+                dir_wav_input = gr.Textbox(
+                    label=i18n("输入待处理音频文件夹路径"),
+                    placeholder="C:\\Users\\Desktop\\todo-songs",
                 )
+                wav_inputs = gr.File(
+                    file_count="multiple", label=i18n("也可批量输入音频文件, 二选一, 优先读文件夹")
+                )
+            with gr.Column():
+                agg = gr.Slider(
+                    minimum=0,
+                    maximum=20,
+                    step=1,
+                    label=i18n("人声提取激进程度"),
+                    value=10,
+                    interactive=True,
+                    visible=False,  # 先不开放调整
+                )
+                opt_vocal_root = gr.Textbox(label=i18n("指定输出主人声文件夹"), value="output/uvr5_opt")
+                opt_ins_root = gr.Textbox(label=i18n("指定输出非主人声文件夹"), value="output/uvr5_opt")
+                format0 = gr.Radio(
+                    label=i18n("导出文件格式"),
+                    choices=["wav", "flac", "mp3", "m4a"],
+                    value="flac",
+                    interactive=True,
+                )
+                with gr.Column():
+                    with gr.Row():
+                        but2 = gr.Button(i18n("转换"), variant="primary")
+                    with gr.Row():
+                        vc_output4 = gr.Textbox(label=i18n("输出信息"), lines=3)
+            but2.click(
+                uvr,
+                [
+                    model_choose,
+                    dir_wav_input,
+                    opt_vocal_root,
+                    wav_inputs,
+                    opt_ins_root,
+                    agg,
+                    format0,
+                ],
+                [vc_output4],
+                api_name="uvr_convert",
+            )
 app.queue().launch(  # concurrency_count=511, max_size=1022
     server_name="0.0.0.0",
     inbrowser=True,

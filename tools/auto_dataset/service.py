@@ -13,6 +13,7 @@ import time
 import uuid
 
 import psutil
+from filelock import FileLock
 
 ROOT = Path(__file__).resolve().parents[2]
 LANGUAGES = {"zh", "en", "ja", "ko", "yue"}
@@ -182,11 +183,8 @@ def import_annotations(value):
     return job, rows
 
 
-def approve(value, table):
-    path = job_dir(value)
-    job, records = snapshot(path)
-    if job["status"] not in {"awaiting_review", "reviewed"}:
-        raise ValueError("自动处理尚未完成")
+def validate_review(path, records, table):
+    """Validate the complete review, keeping stable clip IDs and excluded rows."""
     if hasattr(table, "values"):
         table = table.values.tolist()
     by_id = {r["id"]: dict(r) for r in records}
@@ -211,6 +209,45 @@ def approve(value, table):
             approved.append(row)
     if seen != set(by_id):
         raise ValueError("审核表缺少片段；请用‘使用’列排除音频，不要删除整行")
+    return list(by_id.values()), approved
+
+
+def save_review_clip(value, row_id, text, language, selected):
+    """Persist one edited clip without publishing a training manifest."""
+    path = job_dir(value)
+    with FileLock(str(path / ".review.lock")):
+        job, records = snapshot(path)
+        if job["status"] not in {"awaiting_review", "reviewed"}:
+            raise ValueError("请等待自动处理完成后再审核")
+        if row_id not in {record["id"] for record in records}:
+            raise ValueError("片段不存在，请重新读取审核结果")
+        table = [[selected if r["id"] == row_id else r.get("selected", False), r["id"],
+                  language if r["id"] == row_id else r["language"],
+                  text if r["id"] == row_id else r["text"]] for r in records]
+        updated, _ = validate_review(path, records, table)
+        if updated != records:
+            train = path / "train.list"
+            if train.exists():
+                train.rename(path / ("train.before-edit-" + uuid.uuid4().hex[:8] + ".list"))
+            atomic_json(path / "metadata.json", updated)
+            write_annotations(path, updated)
+            job.update(status="awaiting_review", stage="审核草稿已保存",
+                       message="修改已保存；确认审核后生成训练清单")
+            atomic_json(path / "job.json", job)
+        return updated
+
+
+def approve(value, table):
+    path = job_dir(value)
+    with FileLock(str(path / ".review.lock")):
+        return _approve(path, table)
+
+
+def _approve(path, table):
+    job, records = snapshot(path)
+    if job["status"] not in {"awaiting_review", "reviewed"}:
+        raise ValueError("自动处理尚未完成")
+    updated, approved = validate_review(path, records, table)
     if not approved:
         raise ValueError("至少选择一条有效音频")
     lines = [f"{r['path']}|{job['speaker']}|{r['language']}|{r['text']}" for r in approved]
@@ -218,9 +255,9 @@ def approve(value, table):
     temp = train_path.with_suffix(".list.tmp")
     temp.write_text("\n".join(lines) + "\n", encoding="utf-8")
     os.replace(temp, train_path)
-    atomic_json(path / "metadata.json", list(by_id.values()))
+    atomic_json(path / "metadata.json", updated)
     # Keep excluded clips visible in the annotation editor.
-    write_annotations(path, list(by_id.values()))
+    write_annotations(path, updated)
     job.update(status="reviewed", stage="审核已保存", message=f"已选入训练集 {len(approved)} 条")
     atomic_json(path / "job.json", job)
     return str(train_path), str(path / "clips"), job["experiment"], job["message"]

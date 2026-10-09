@@ -66,7 +66,7 @@ from TTS_infer_pack.TTS import NO_PROMPT_ERROR, TTS, TTS_Config
 from module.models_v5 import V5_VERSIONS
 
 from tools.acceleration import cuda_graph_available, flash_attention_available
-from tools.assets import css, js, top_html
+from tools.assets import css, js, top_html, theme, workspace_header
 from tools.i18n.i18n import I18nAuto, scan_language_list
 
 language = os.environ.get("language", "Auto")
@@ -323,108 +323,86 @@ def change_gpt_weights(gpt_path):
     tts_pipeline.init_t2s_weights(gpt_path)
 
 
-with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css) as app:
-    gr.HTML(
-        top_html.format(
-            i18n("本软件以MIT协议开源, 作者不对软件具备任何控制力, 使用软件者、传播软件导出的声音者自负全责.")
-            + i18n("如不认可该条款, 则不能使用或引用软件包内任何代码和文件. 详见根目录LICENSE.")
-        ),
-        elem_classes="markdown",
-    )
-
-    with gr.Column():
-        # with gr.Group():
-        gr.Markdown(value=i18n("模型切换"))
-        with gr.Row():
-            GPT_dropdown = gr.Dropdown(
-                label=i18n("GPT模型列表"),
-                choices=sorted(GPT_names, key=custom_sort_key),
-                value=next((name for name, path in name2gpt_path.items() if path == gpt_path), gpt_path),
-                interactive=True,
-            )
-            SoVITS_dropdown = gr.Dropdown(
-                label=i18n("SoVITS模型列表"),
-                choices=sorted(SoVITS_names, key=custom_sort_key),
-                value=next((name for name, path in name2sovits_path.items() if path == sovits_path), sovits_path),
-                interactive=True,
-            )
-            refresh_button = gr.Button(i18n("刷新模型路径"), variant="primary")
-            refresh_button.click(fn=change_choices, inputs=[], outputs=[SoVITS_dropdown, GPT_dropdown])
-
-    with gr.Row():
-        with gr.Column():
-            gr.Markdown(value=i18n("*请上传并填写参考信息"))
-            with gr.Row():
-                inp_ref = gr.Audio(label=i18n("主参考音频(请上传3~10秒内参考音频，超过会报错！)"), type="filepath")
-                inp_refs = gr.File(
-                    label=i18n("辅参考音频(可选多个，或不选)"),
-                    file_count="multiple",
-                    visible=True if model_version != "v3" else False,
+if os.environ.get("GPT_SOVITS_HEADLESS") != "1":
+    with gr.Blocks(
+        title="GPT-SoVITS · 语音合成", analytics_enabled=False, theme=theme, js=js, css=css, fill_width=True
+    ) as app:
+        gr.HTML(
+            top_html.format(
+                i18n("本软件以MIT协议开源, 作者不对软件具备任何控制力, 使用软件者、传播软件导出的声音者自负全责.")
+                + i18n("如不认可该条款, 则不能使用或引用软件包内任何代码和文件. 详见根目录LICENSE.")
+            ),
+            elem_classes="markdown",
+        )
+        gr.HTML(
+            workspace_header(
+                "语音合成 · TTS", "上传参考音频确定音色，填写目标文本，再生成并试听。模型与高级设置保留在左侧和展开区域。"
+            ),
+            elem_classes="standalone-heading",
+        )
+        with gr.Row(elem_classes="synthesis-layout"):
+            with gr.Column(scale=3, min_width=280, elem_classes=["inference-sidebar", "workbench-panel"]):
+                gr.HTML('<div class="panel-heading">模型与参考音色</div>')
+                GPT_dropdown = gr.Dropdown(
+                    label=i18n("GPT模型列表"),
+                    choices=sorted(GPT_names, key=custom_sort_key),
+                    value=next((name for name, path in name2gpt_path.items() if path == gpt_path), gpt_path),
+                    interactive=True,
                 )
-            prompt_text = gr.Textbox(label=i18n("主参考音频的文本"), value="", lines=2)
-            with gr.Row():
-                prompt_language = gr.Dropdown(
-                    label=i18n("主参考音频的语种"), choices=list(dict_language.keys()), value=i18n("中文"), scale=1
+                SoVITS_dropdown = gr.Dropdown(
+                    label=i18n("SoVITS模型列表"),
+                    choices=sorted(SoVITS_names, key=custom_sort_key),
+                    value=next((name for name, path in name2sovits_path.items() if path == sovits_path), sovits_path),
+                    interactive=True,
                 )
-                cfg_rate = gr.Slider(
-                    minimum=0, maximum=2, step=0.05,
-                    value=(1.30 if model_version == "v5dev" else 0.0), label="CFG",
-                    visible=model_version in V5_VERSIONS, interactive=True, scale=1,
-                )
-            with gr.Column():
-                ref_text_free = gr.Checkbox(
-                    label=i18n("开启无参考文本模式。不填参考文本亦相当于开启。"),
-                    value=False,
-                    interactive=True if model_version != "v3" else False,
-                    show_label=True,
-                )
-                gr.Markdown(
-                    i18n("使用无参考文本模式时建议使用微调的GPT")
-                    + "<br>"
-                    + i18n("听不清参考音频说的啥(不晓得写啥)可以开。开启后无视填写的参考文本。")
-                )
-
-        with gr.Column():
-            gr.Markdown(value=i18n("*请填写需要合成的目标文本和语种模式"))
-            text = gr.Textbox(label=i18n("需要合成的文本"), value="", lines=20, max_lines=20)
-            text_language = gr.Dropdown(
-                label=i18n("需要合成的文本的语种"), choices=list(dict_language.keys()), value=i18n("中文")
-            )
-
-    with gr.Group():
-        gr.Markdown(value=i18n("推理设置"))
-        with gr.Row():
-            with gr.Column():
-                with gr.Row():
-                    batch_size = gr.Slider(
-                        minimum=1, maximum=200, step=1, label=i18n("batch_size"),
-                        value=1 if model_version in V5_VERSIONS else 20, interactive=True
+                refresh_button = gr.Button(i18n("刷新模型路径"), variant="secondary")
+                with gr.Accordion("参考音频与标注", open=True):
+                    inp_ref = gr.Audio(label="参考音频（3 至 10 秒）", type="filepath")
+                    prompt_text = gr.Textbox(label="参考音频中的文字", value="", lines=3, max_lines=6)
+                    prompt_language = gr.Dropdown(
+                        label="参考音频语种", choices=list(dict_language.keys()), value=i18n("中文"), scale=1
                     )
-                    sample_steps = gr.Radio(
-                        label="Euler steps (V3/V4/V5)", value=(4 if model_version == "v5turbo" else 32), choices=[4, 8, 16, 32], visible=True
+                with gr.Accordion("更多参考与音色设置", open=False):
+                    inp_refs = gr.File(
+                        label="辅助参考音频（可选）",
+                        file_count="multiple",
+                        visible=True if model_version != "v3" else False,
                     )
-                with gr.Row():
-                    fragment_interval = gr.Slider(
-                        minimum=0.01, maximum=1, step=0.01, label=i18n("分段间隔(秒)"), value=0.3, interactive=True
+                    ref_text_free = gr.Checkbox(
+                        label="无需参考文本（模型支持时可用）",
+                        value=False,
+                        interactive=True if model_version != "v3" else False,
+                        show_label=True,
                     )
-                    speed_factor = gr.Slider(
-                        minimum=0.6, maximum=1.65, step=0.05, label="语速", value=1.0, interactive=True
+                    gr.Markdown(
+                        "辅助音频用于融合参考音色。无需参考文本模式建议搭配微调后的 GPT；模型支持情况由当前模型决定。"
                     )
-                with gr.Row():
-                    top_k = gr.Slider(minimum=1, maximum=100, step=1, label=i18n("top_k"), value=15, interactive=True)
-                    top_p = gr.Slider(minimum=0, maximum=1, step=0.05, label=i18n("top_p"), value=1, interactive=True)
-                with gr.Row():
-                    temperature = gr.Slider(
-                        minimum=0, maximum=1, step=0.05, label=i18n("temperature"), value=1, interactive=True
+                    cfg_rate = gr.Slider(
+                        minimum=0,
+                        maximum=2,
+                        step=0.05,
+                        value=1.3 if model_version == "v5dev" else 0.0,
+                        label="CFG",
+                        visible=model_version in V5_VERSIONS,
+                        interactive=True,
+                        scale=1,
                     )
-                    repetition_penalty = gr.Slider(
-                        minimum=0, maximum=2, step=0.05, label=i18n("重复惩罚"), value=1.35, interactive=True
+            with gr.Column(scale=7, min_width=320, elem_classes="inference-main"):
+                with gr.Group(elem_classes="workbench-panel"):
+                    gr.HTML('<div class="panel-heading">目标文本</div>')
+                    text = gr.Textbox(label="需要合成的文本", value="", lines=12, max_lines=24)
+                    text_language = gr.Dropdown(
+                        label="目标文本语种", choices=list(dict_language.keys()), value=i18n("中文")
                     )
-
-            with gr.Column():
-                with gr.Row():
+                    with gr.Row():
+                        speed_factor = gr.Slider(
+                            minimum=0.6, maximum=1.65, step=0.05, label="语速", value=1.0, interactive=True
+                        )
+                        fragment_interval = gr.Slider(
+                            minimum=0.01, maximum=1, step=0.01, label="分段停顿 / 秒", value=0.3, interactive=True
+                        )
                     how_to_cut = gr.Dropdown(
-                        label=i18n("怎么切"),
+                        label="长文本切分方式",
                         choices=[
                             i18n("不切"),
                             i18n("凑四句一切"),
@@ -437,34 +415,92 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                         interactive=True,
                         scale=1,
                     )
-                    super_sampling = gr.Checkbox(
-                        label=i18n("音频超采样(仅对V3生效))"), value=False, interactive=True, show_label=True
-                    )
-
-                with gr.Row():
-                    use_cuda_graph = gr.Checkbox(
-                        label="CUDA Graph", value=graph_available, visible=graph_available, interactive=graph_available
-                    )
-                    use_flash_attention = gr.Checkbox(
-                        label="flash_attn加速", value=flash_attn_supported, visible=flash_attn_supported,
-                        interactive=flash_attn_supported
-                    )
-                    split_bucket = gr.Checkbox(
-                        label=i18n("数据分桶(并行推理时会降低一点计算量)"),
-                        value=True,
-                        interactive=True,
-                        show_label=True,
-                    )
-
-                with gr.Row():
-                    seed = gr.Number(label=i18n("随机种子"), value=-1)
-                    keep_random = gr.Checkbox(label=i18n("保持随机"), value=True, interactive=True, show_label=True)
-
-                output = gr.Audio(label=i18n("输出的语音"))
+                with gr.Accordion("高级采样与加速设置", open=False):
+                    gr.Markdown("初次使用建议保留默认值。调整采样参数会影响表达的随机性，增加采样步数会增加生成耗时。")
+                    with gr.Row():
+                        top_k = gr.Slider(minimum=1, maximum=100, step=1, label=i18n("top_k"), value=15, interactive=True)
+                        top_p = gr.Slider(minimum=0, maximum=1, step=0.05, label=i18n("top_p"), value=1, interactive=True)
+                        temperature = gr.Slider(
+                            minimum=0, maximum=1, step=0.05, label=i18n("temperature"), value=1, interactive=True
+                        )
+                    with gr.Row():
+                        batch_size = gr.Slider(
+                            minimum=1,
+                            maximum=200,
+                            step=1,
+                            label="批量大小",
+                            value=1 if model_version in V5_VERSIONS else 20,
+                            interactive=True,
+                        )
+                        sample_steps = gr.Radio(
+                            label="采样步数",
+                            value=4 if model_version == "v5turbo" else 32,
+                            choices=[4, 8, 16, 32],
+                            visible=True,
+                        )
+                        repetition_penalty = gr.Slider(
+                            minimum=0, maximum=2, step=0.05, label=i18n("重复惩罚"), value=1.35, interactive=True
+                        )
+                    with gr.Row():
+                        seed = gr.Number(label=i18n("随机种子"), value=-1)
+                        keep_random = gr.Checkbox(label=i18n("保持随机"), value=True, interactive=True, show_label=True)
+                    with gr.Row():
+                        use_cuda_graph = gr.Checkbox(
+                            label="CUDA Graph", value=graph_available, visible=graph_available, interactive=graph_available
+                        )
+                        use_flash_attention = gr.Checkbox(
+                            label="flash_attn加速",
+                            value=flash_attn_supported,
+                            visible=flash_attn_supported,
+                            interactive=flash_attn_supported,
+                        )
+                        split_bucket = gr.Checkbox(
+                            label=i18n("数据分桶(并行推理时会降低一点计算量)"),
+                            value=True,
+                            interactive=True,
+                            show_label=True,
+                        )
+                        super_sampling = gr.Checkbox(
+                            label=i18n("音频超采样(仅对V3生效))"), value=False, interactive=True, show_label=True
+                        )
                 with gr.Row():
                     inference_button = gr.Button(i18n("合成语音"), variant="primary")
-                    stop_infer = gr.Button(i18n("终止合成"), variant="primary")
+                    stop_infer = gr.Button(i18n("终止合成"), variant="stop")
+                with gr.Group(elem_classes="workbench-panel"):
+                    gr.HTML('<div class="panel-heading">生成结果</div>')
+                    output = gr.Audio(label="合成音频 · 试听与下载")
+        with gr.Accordion("长文本切分工具", open=False):
+            gr.Markdown(
+                value=i18n(
+                    "文本切分工具。太长的文本合成出来效果不一定好，所以太长建议先切。合成会根据文本的换行分开合成再拼起来。"
+                )
+            )
+            with gr.Row():
+                text_inp = gr.Textbox(label=i18n("需要合成的切分前文本"), value="", lines=4)
+                with gr.Column():
+                    _how_to_cut = gr.Radio(
+                        label=i18n("怎么切"),
+                        choices=[
+                            i18n("不切"),
+                            i18n("凑四句一切"),
+                            i18n("凑50字一切"),
+                            i18n("按中文句号。切"),
+                            i18n("按英文句号.切"),
+                            i18n("按标点符号切"),
+                        ],
+                        value=i18n("凑四句一切"),
+                        interactive=True,
+                    )
+                    cut_text = gr.Button(i18n("切分"), variant="primary")
 
+                def to_cut(text_inp, how_to_cut):
+                    if len(text_inp.strip()) == 0 or text_inp == []:
+                        return ""
+                    method = get_method(cut_method[how_to_cut])
+                    return method(text_inp)
+
+                text_opt = gr.Textbox(label=i18n("切分后文本"), value="", lines=4)
+                cut_text.click(to_cut, [text_inp, _how_to_cut], [text_opt])
         inference_button.click(
             inference,
             [
@@ -511,44 +547,11 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                 inference_button,
                 cfg_rate,
             ],
-        )  #
-        GPT_dropdown.change(change_gpt_weights, [GPT_dropdown], [])
-
-    with gr.Group():
-        gr.Markdown(
-            value=i18n(
-                "文本切分工具。太长的文本合成出来效果不一定好，所以太长建议先切。合成会根据文本的换行分开合成再拼起来。"
-            )
         )
-        with gr.Row():
-            text_inp = gr.Textbox(label=i18n("需要合成的切分前文本"), value="", lines=4)
-            with gr.Column():
-                _how_to_cut = gr.Radio(
-                    label=i18n("怎么切"),
-                    choices=[
-                        i18n("不切"),
-                        i18n("凑四句一切"),
-                        i18n("凑50字一切"),
-                        i18n("按中文句号。切"),
-                        i18n("按英文句号.切"),
-                        i18n("按标点符号切"),
-                    ],
-                    value=i18n("凑四句一切"),
-                    interactive=True,
-                )
-                cut_text = gr.Button(i18n("切分"), variant="primary")
+        GPT_dropdown.change(change_gpt_weights, [GPT_dropdown], [])
+        refresh_button.click(fn=change_choices, inputs=[], outputs=[SoVITS_dropdown, GPT_dropdown])
 
-            def to_cut(text_inp, how_to_cut):
-                if len(text_inp.strip()) == 0 or text_inp == []:
-                    return ""
-                method = get_method(cut_method[how_to_cut])
-                return method(text_inp)
-
-            text_opt = gr.Textbox(label=i18n("切分后文本"), value="", lines=4)
-            cut_text.click(to_cut, [text_inp, _how_to_cut], [text_opt])
-        gr.Markdown(value=i18n("后续将支持转音素、手工修改音素、语音合成分步执行。"))
-
-if __name__ == "__main__":
+if __name__ == "__main__" and os.environ.get("GPT_SOVITS_HEADLESS") != "1":
     app.queue().launch(  # concurrency_count=511, max_size=1022
         server_name="0.0.0.0",
         inbrowser=True,

@@ -60,7 +60,7 @@ import shutil
 import subprocess
 from subprocess import Popen
 
-from tools.assets import css, js, top_html
+from tools.assets import css, js, top_html, theme, workspace_header
 from tools.i18n.i18n import I18nAuto, scan_language_list
 
 language = sys.argv[-1] if sys.argv[-1] in scan_language_list() else "Auto"
@@ -78,7 +78,6 @@ from config import (
     is_share,
     memset,
     python_exec,
-    webui_port_infer_tts,
     webui_port_main,
     webui_port_subfix,
     webui_port_uvr5,
@@ -207,7 +206,6 @@ p_label = None
 p_uvr5 = None
 p_asr = None
 p_denoise = None
-p_tts_inference = None
 
 
 def kill_proc_tree(pid, including_parent=True):
@@ -328,42 +326,6 @@ def change_uvr5():
         )
 
 
-process_name_tts = i18n("TTS推理WebUI")
-
-
-def change_tts_inference(bert_path, cnhubert_base_path, gpu_number, gpt_path, sovits_path, batched_infer_enabled):
-    global p_tts_inference
-    if batched_infer_enabled:
-        cmd = '"%s" -s GPT_SoVITS/inference_webui_fast.py "%s"' % (python_exec, language)
-    else:
-        cmd = '"%s" -s GPT_SoVITS/inference_webui.py "%s"' % (python_exec, language)
-    # #####v3暂不支持加速推理
-    # if version=="v3":
-    #     cmd = '"%s" GPT_SoVITS/inference_webui.py "%s"'%(python_exec, language)
-    if p_tts_inference is None:
-        os.environ["gpt_path"] = gpt_path
-        os.environ["sovits_path"] = sovits_path
-        os.environ["cnhubert_base_path"] = cnhubert_base_path
-        os.environ["bert_path"] = bert_path
-        os.environ["_CUDA_VISIBLE_DEVICES"] = str(fix_gpu_number(gpu_number))
-        os.environ["is_half"] = str(is_half)
-        os.environ["infer_ttswebui"] = str(webui_port_infer_tts)
-        os.environ["is_share"] = str(is_share)
-        yield (
-            process_info(process_name_tts, "opened"),
-            {"__type__": "update", "visible": False},
-            {"__type__": "update", "visible": True},
-        )
-        print(cmd)
-        p_tts_inference = Popen(cmd, shell=True)
-    else:
-        kill_process(p_tts_inference.pid, process_name_tts)
-        p_tts_inference = None
-        yield (
-            process_info(process_name_tts, "closed"),
-            {"__type__": "update", "visible": True},
-            {"__type__": "update", "visible": False},
-        )
 
 
 from tools.asr.config import asr_dict
@@ -1316,6 +1278,9 @@ def sync(text):
 def ensure_auto_dataset_idle():
     from filelock import FileLock, Timeout
     from tools.auto_dataset.service import PROCESSES
+    from tools.tts_workspace.service import service as tts_service
+    if tts_service.lock.locked():
+        raise gr.Error("推理模型正在加载或合成，请结束后再启动 GPU 任务")
     if any(p.poll() is None for p in list(PROCESSES.values())):
         raise gr.Error("全自动数据集任务正在运行，请结束后再启动 GPU 训练或预处理")
     os.makedirs(os.path.join(now_dir, "output"), exist_ok=True)
@@ -1330,7 +1295,8 @@ def ensure_auto_dataset_idle():
 def auto_dataset_busy():
     processes = [p_train_SoVITS, p_train_GPT, p_asr, p_denoise, p_uvr5]
     processes += ps1a + ps1b + ps1c + ps1abc
-    return any(p is not None and p.poll() is None for p in processes)
+    from tools.tts_workspace.service import service as tts_service
+    return tts_service.lock.locked() or any(p is not None and p.poll() is None for p in processes)
 
 
 def open_auto_dataset_editor(annotation_path):
@@ -1349,9 +1315,12 @@ def open_auto_dataset_editor(annotation_path):
 
 
 from tools.auto_dataset.ui import build_page as build_auto_dataset_page, bind_training as bind_auto_dataset_training
+from tools.tts_workspace.ui import build_page as build_tts_workspace
 
 
-with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css) as app:
+with gr.Blocks(
+    title="GPT-SoVITS · 语音工作台", analytics_enabled=False, theme=theme, js=js, css=css, fill_width=True
+) as app:
     gr.HTML(
         top_html.format(
             i18n("本软件以MIT协议开源, 作者不对软件具备任何控制力, 使用软件者、传播软件导出的声音者自负全责.")
@@ -1360,178 +1329,275 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
         elem_classes="markdown",
     )
 
-    with gr.Tabs():
-        auto_dataset_page = build_auto_dataset_page(busy=auto_dataset_busy)
-        with gr.TabItem("0-" + i18n("前置数据集获取工具")):  # 提前随机切片防止uvr5爆内存->uvr5->slicer->asr->打标
-            with gr.Accordion(label="0a-" + i18n("UVR5人声伴奏分离&去混响去延迟工具")):
-                with gr.Row():
-                    with gr.Column(scale=3):
-                        with gr.Row():
-                            uvr5_info = gr.Textbox(label=process_info(process_name_uvr5, "info"))
-                    open_uvr5 = gr.Button(
-                        value=process_info(process_name_uvr5, "open"), variant="primary", visible=True
-                    )
-                    close_uvr5 = gr.Button(
-                        value=process_info(process_name_uvr5, "close"), variant="primary", visible=False
-                    )
+    gr.Markdown(
+        "**工作流**　数据集准备与审核 → 训练数据格式化 → SoVITS / GPT 训练 → 语音合成",
+        elem_classes="workflow-intro",
+    )
 
-            with gr.Accordion(label="0b-" + i18n("语音切分工具")):
-                with gr.Row():
-                    with gr.Column(scale=3):
-                        with gr.Row():
-                            slice_inp_path = gr.Textbox(label=i18n("音频自动切分输入路径，可文件可文件夹"), value="")
-                            slice_opt_root = gr.Textbox(
-                                label=i18n("切分后的子音频的输出根目录"), value="output/slicer_opt"
-                            )
-                        with gr.Row():
-                            threshold = gr.Textbox(
-                                label=i18n("threshold:音量小于这个值视作静音的备选切割点"), value="-34"
-                            )
-                            min_length = gr.Textbox(
-                                label=i18n("min_length:每段最小多长，如果第一段太短一直和后面段连起来直到超过这个值"),
-                                value="4000",
-                            )
-                            min_interval = gr.Textbox(label=i18n("min_interval:最短切割间隔"), value="300")
-                            hop_size = gr.Textbox(
-                                label=i18n("hop_size:怎么算音量曲线，越小精度越大计算量越高（不是精度越大效果越好）"),
-                                value="10",
-                            )
-                            max_sil_kept = gr.Textbox(label=i18n("max_sil_kept:切完后静音最多留多长"), value="500")
-                        with gr.Row():
-                            _max = gr.Slider(
-                                minimum=0,
-                                maximum=1,
-                                step=0.05,
-                                label=i18n("max:归一化后最大值多少"),
-                                value=0.9,
-                                interactive=True,
-                            )
-                            alpha = gr.Slider(
-                                minimum=0,
-                                maximum=1,
-                                step=0.05,
-                                label=i18n("alpha_mix:混多少比例归一化后音频进来"),
-                                value=0.25,
-                                interactive=True,
-                            )
-                        with gr.Row():
-                            n_process = gr.Slider(
-                                minimum=1,
-                                maximum=n_cpu,
-                                step=1,
-                                label=i18n("切割使用的进程数"),
-                                value=4,
-                                interactive=True,
-                            )
-                            slicer_info = gr.Textbox(label=process_info(process_name_slice, "info"))
-                    open_slicer_button = gr.Button(
-                        value=process_info(process_name_slice, "open"), variant="primary", visible=True
-                    )
-                    close_slicer_button = gr.Button(
-                        value=process_info(process_name_slice, "close"), variant="primary", visible=False
-                    )
-
-            # gr.Markdown(value="0bb-" + i18n("语音降噪工具")+i18n("(不稳定，先别用，可能劣化模型效果！)"))
-            with gr.Row(visible=False):
-                with gr.Column(scale=3):
-                    with gr.Row():
-                        denoise_input_dir = gr.Textbox(label=i18n("输入文件夹路径"), value="")
-                        denoise_output_dir = gr.Textbox(label=i18n("输出文件夹路径"), value="output/denoise_opt")
-                    with gr.Row():
-                        denoise_info = gr.Textbox(label=process_info(process_name_denoise, "info"))
-                open_denoise_button = gr.Button(
-                    value=process_info(process_name_denoise, "open"), variant="primary", visible=True
+    with gr.Tabs(elem_id="workbench-nav") as workspace_navigation:
+        with gr.TabItem("数据集", id="datasets"):
+            gr.HTML(
+                workspace_header(
+                    "数据集 · 任务与审核", "管理说话人素材，处理音频并审核标注。通过审核的片段将用于后续 TTS 训练。"
                 )
-                close_denoise_button = gr.Button(
-                    value=process_info(process_name_denoise, "close"), variant="primary", visible=False
+            )
+            with gr.Tabs():
+                auto_dataset_page = build_auto_dataset_page(busy=auto_dataset_busy)
+                with gr.TabItem("手动预处理工具"):
+                    gr.Markdown(
+                        "适合已有音频与标注文件的用户。按顺序使用人声分离、切分、语音识别和文本校对；新手可先使用‘数据集工作台’。"
+                    )
+                    with gr.Accordion(label="0a-" + i18n("UVR5人声伴奏分离&去混响去延迟工具")):
+                        with gr.Row():
+                            with gr.Column(scale=3):
+                                with gr.Row():
+                                    uvr5_info = gr.Textbox(label=process_info(process_name_uvr5, "info"))
+                            open_uvr5 = gr.Button(
+                                value=process_info(process_name_uvr5, "open"),
+                                variant="primary",
+                                visible=True,
+                                scale=0,
+                                min_width=0,
+                                size="sm",
+                            )
+                            close_uvr5 = gr.Button(
+                                value=process_info(process_name_uvr5, "close"),
+                                variant="stop",
+                                visible=False,
+                                scale=0,
+                                min_width=0,
+                                size="sm",
+                            )
+
+                    with gr.Accordion(label="0b-" + i18n("语音切分工具")):
+                        with gr.Row():
+                            with gr.Column(scale=3):
+                                with gr.Row():
+                                    slice_inp_path = gr.Textbox(
+                                        label=i18n("音频自动切分输入路径，可文件可文件夹"), value=""
+                                    )
+                                    slice_opt_root = gr.Textbox(
+                                        label=i18n("切分后的子音频的输出根目录"), value="output/slicer_opt"
+                                    )
+                                with gr.Row():
+                                    threshold = gr.Textbox(
+                                        label=i18n("threshold:音量小于这个值视作静音的备选切割点"), value="-34"
+                                    )
+                                    min_length = gr.Textbox(
+                                        label=i18n(
+                                            "min_length:每段最小多长，如果第一段太短一直和后面段连起来直到超过这个值"
+                                        ),
+                                        value="4000",
+                                    )
+                                    min_interval = gr.Textbox(label=i18n("min_interval:最短切割间隔"), value="300")
+                                    hop_size = gr.Textbox(
+                                        label=i18n(
+                                            "hop_size:怎么算音量曲线，越小精度越大计算量越高（不是精度越大效果越好）"
+                                        ),
+                                        value="10",
+                                    )
+                                    max_sil_kept = gr.Textbox(
+                                        label=i18n("max_sil_kept:切完后静音最多留多长"), value="500"
+                                    )
+                                with gr.Row():
+                                    _max = gr.Slider(
+                                        minimum=0,
+                                        maximum=1,
+                                        step=0.05,
+                                        label=i18n("max:归一化后最大值多少"),
+                                        value=0.9,
+                                        interactive=True,
+                                    )
+                                    alpha = gr.Slider(
+                                        minimum=0,
+                                        maximum=1,
+                                        step=0.05,
+                                        label=i18n("alpha_mix:混多少比例归一化后音频进来"),
+                                        value=0.25,
+                                        interactive=True,
+                                    )
+                                with gr.Row():
+                                    n_process = gr.Slider(
+                                        minimum=1,
+                                        maximum=n_cpu,
+                                        step=1,
+                                        label=i18n("切割使用的进程数"),
+                                        value=4,
+                                        interactive=True,
+                                    )
+                                    slicer_info = gr.Textbox(label=process_info(process_name_slice, "info"))
+                            open_slicer_button = gr.Button(
+                                value=process_info(process_name_slice, "open"),
+                                variant="primary",
+                                visible=True,
+                                scale=0,
+                                min_width=0,
+                                size="sm",
+                            )
+                            close_slicer_button = gr.Button(
+                                value=process_info(process_name_slice, "close"),
+                                variant="stop",
+                                visible=False,
+                                scale=0,
+                                min_width=0,
+                                size="sm",
+                            )
+
+                    # gr.Markdown(value="0bb-" + i18n("语音降噪工具")+i18n("(不稳定，先别用，可能劣化模型效果！)"))
+                    with gr.Row(visible=False):
+                        with gr.Column(scale=3):
+                            with gr.Row():
+                                denoise_input_dir = gr.Textbox(label=i18n("输入文件夹路径"), value="")
+                                denoise_output_dir = gr.Textbox(
+                                    label=i18n("输出文件夹路径"), value="output/denoise_opt"
+                                )
+                            with gr.Row():
+                                denoise_info = gr.Textbox(label=process_info(process_name_denoise, "info"))
+                        open_denoise_button = gr.Button(
+                            value=process_info(process_name_denoise, "open"),
+                            variant="primary",
+                            visible=True,
+                            scale=0,
+                            min_width=0,
+                            size="sm",
+                        )
+                        close_denoise_button = gr.Button(
+                            value=process_info(process_name_denoise, "close"),
+                            variant="stop",
+                            visible=False,
+                            scale=0,
+                            min_width=0,
+                            size="sm",
+                        )
+
+                    with gr.Accordion(label="0c-" + i18n("语音识别工具")):
+                        with gr.Row():
+                            with gr.Column(scale=3):
+                                with gr.Row():
+                                    asr_inp_dir = gr.Textbox(
+                                        label=i18n("输入文件夹路径"),
+                                        value="",
+                                        placeholder="输入切分后的音频目录",
+                                        interactive=True,
+                                    )
+                                    asr_opt_dir = gr.Textbox(
+                                        label=i18n("输出文件夹路径"), value="output/asr_opt", interactive=True
+                                    )
+                                with gr.Row():
+                                    asr_model = gr.Dropdown(
+                                        label=i18n("ASR 模型"),
+                                        choices=list(asr_dict.keys()),
+                                        interactive=True,
+                                        value="达摩 ASR (中文经典)",
+                                    )
+                                    asr_size = gr.Dropdown(
+                                        label=i18n("ASR 模型尺寸"), choices=["large"], interactive=True, value="large"
+                                    )
+                                    asr_lang = gr.Dropdown(
+                                        label=i18n("ASR 语言设置"), choices=["zh", "yue"], interactive=True, value="zh"
+                                    )
+                                    asr_precision = gr.Dropdown(
+                                        label=i18n("数据类型精度"),
+                                        choices=["float32"],
+                                        interactive=True,
+                                        value="float32",
+                                    )
+                                with gr.Row():
+                                    asr_info = gr.Textbox(label=process_info(process_name_asr, "info"))
+                            open_asr_button = gr.Button(
+                                value=process_info(process_name_asr, "open"),
+                                variant="primary",
+                                visible=True,
+                                scale=0,
+                                min_width=0,
+                                size="sm",
+                            )
+                            close_asr_button = gr.Button(
+                                value=process_info(process_name_asr, "close"),
+                                variant="stop",
+                                visible=False,
+                                scale=0,
+                                min_width=0,
+                                size="sm",
+                            )
+
+                        def change_lang_choices(key):  # 根据选择的模型修改可选的语言
+                            return {
+                                "__type__": "update",
+                                "choices": asr_dict[key]["lang"],
+                                "value": asr_dict[key]["lang"][0],
+                            }
+
+                        def change_size_choices(key):  # 根据选择的模型修改可选的模型尺寸
+                            return {
+                                "__type__": "update",
+                                "choices": asr_dict[key]["size"],
+                                "value": asr_dict[key]["size"][-1],
+                            }
+
+                        def change_precision_choices(key):  # 根据选择的模型修改可选的语言
+                            if key == "Faster Whisper (多语种)":
+                                if default_batch_size <= 4:
+                                    precision = "int8"
+                                elif is_half:
+                                    precision = "float16"
+                                else:
+                                    precision = "float32"
+                            else:
+                                precision = "float32"
+                            return {"__type__": "update", "choices": asr_dict[key]["precision"], "value": precision}
+
+                        asr_model.change(change_lang_choices, [asr_model], [asr_lang])
+                        asr_model.change(change_size_choices, [asr_model], [asr_size])
+                        asr_model.change(change_precision_choices, [asr_model], [asr_precision])
+
+                    with gr.Accordion(label="0d-" + i18n("语音文本校对标注工具")):
+                        with gr.Row():
+                            with gr.Column(scale=3):
+                                with gr.Row():
+                                    path_list = gr.Textbox(
+                                        label=i18n("标注文件路径 (含文件后缀 *.list)"),
+                                        value="",
+                                        placeholder="输入已有 .list 标注文件路径",
+                                        interactive=True,
+                                    )
+                                    label_info = gr.Textbox(label=process_info(process_name_subfix, "info"))
+                            open_label = gr.Button(
+                                value=process_info(process_name_subfix, "open"),
+                                variant="primary",
+                                visible=True,
+                                scale=0,
+                                min_width=0,
+                                size="sm",
+                            )
+                            close_label = gr.Button(
+                                value=process_info(process_name_subfix, "close"),
+                                variant="stop",
+                                visible=False,
+                                scale=0,
+                                min_width=0,
+                                size="sm",
+                            )
+
+                        open_label.click(change_label, [path_list], [label_info, open_label, close_label])
+                        close_label.click(change_label, [path_list], [label_info, open_label, close_label])
+                        open_uvr5.click(change_uvr5, [], [uvr5_info, open_uvr5, close_uvr5])
+                        close_uvr5.click(change_uvr5, [], [uvr5_info, open_uvr5, close_uvr5])
+
+        with gr.TabItem("TTS 训练", id="training", elem_classes="training-workspace"):
+            gr.HTML(
+                workspace_header(
+                    "TTS 训练 · 实验工作区",
+                    "使用审核后的数据集，先提取训练特征，再分别训练音色模型 SoVITS 和语言模型 GPT。",
                 )
-
-            with gr.Accordion(label="0c-" + i18n("语音识别工具")):
-                with gr.Row():
-                    with gr.Column(scale=3):
-                        with gr.Row():
-                            asr_inp_dir = gr.Textbox(
-                                label=i18n("输入文件夹路径"), value="D:\\GPT-SoVITS\\raw\\xxx", interactive=True
-                            )
-                            asr_opt_dir = gr.Textbox(
-                                label=i18n("输出文件夹路径"), value="output/asr_opt", interactive=True
-                            )
-                        with gr.Row():
-                            asr_model = gr.Dropdown(
-                                label=i18n("ASR 模型"),
-                                choices=list(asr_dict.keys()),
-                                interactive=True,
-                                value="达摩 ASR (中文经典)",
-                            )
-                            asr_size = gr.Dropdown(
-                                label=i18n("ASR 模型尺寸"), choices=["large"], interactive=True, value="large"
-                            )
-                            asr_lang = gr.Dropdown(
-                                label=i18n("ASR 语言设置"), choices=["zh", "yue"], interactive=True, value="zh"
-                            )
-                            asr_precision = gr.Dropdown(
-                                label=i18n("数据类型精度"), choices=["float32"], interactive=True, value="float32"
-                            )
-                        with gr.Row():
-                            asr_info = gr.Textbox(label=process_info(process_name_asr, "info"))
-                    open_asr_button = gr.Button(
-                        value=process_info(process_name_asr, "open"), variant="primary", visible=True
-                    )
-                    close_asr_button = gr.Button(
-                        value=process_info(process_name_asr, "close"), variant="primary", visible=False
-                    )
-
-                def change_lang_choices(key):  # 根据选择的模型修改可选的语言
-                    return {"__type__": "update", "choices": asr_dict[key]["lang"], "value": asr_dict[key]["lang"][0]}
-
-                def change_size_choices(key):  # 根据选择的模型修改可选的模型尺寸
-                    return {"__type__": "update", "choices": asr_dict[key]["size"], "value": asr_dict[key]["size"][-1]}
-
-                def change_precision_choices(key):  # 根据选择的模型修改可选的语言
-                    if key == "Faster Whisper (多语种)":
-                        if default_batch_size <= 4:
-                            precision = "int8"
-                        elif is_half:
-                            precision = "float16"
-                        else:
-                            precision = "float32"
-                    else:
-                        precision = "float32"
-                    return {"__type__": "update", "choices": asr_dict[key]["precision"], "value": precision}
-
-                asr_model.change(change_lang_choices, [asr_model], [asr_lang])
-                asr_model.change(change_size_choices, [asr_model], [asr_size])
-                asr_model.change(change_precision_choices, [asr_model], [asr_precision])
-
-            with gr.Accordion(label="0d-" + i18n("语音文本校对标注工具")):
-                with gr.Row():
-                    with gr.Column(scale=3):
-                        with gr.Row():
-                            path_list = gr.Textbox(
-                                label=i18n("标注文件路径 (含文件后缀 *.list)"),
-                                value="D:\\RVC1006\\GPT-SoVITS\\raw\\xxx.list",
-                                interactive=True,
-                            )
-                            label_info = gr.Textbox(label=process_info(process_name_subfix, "info"))
-                    open_label = gr.Button(
-                        value=process_info(process_name_subfix, "open"), variant="primary", visible=True
-                    )
-                    close_label = gr.Button(
-                        value=process_info(process_name_subfix, "close"), variant="primary", visible=False
-                    )
-
-                open_label.click(change_label, [path_list], [label_info, open_label, close_label])
-                close_label.click(change_label, [path_list], [label_info, open_label, close_label])
-                open_uvr5.click(change_uvr5, [], [uvr5_info, open_uvr5, close_uvr5])
-                close_uvr5.click(change_uvr5, [], [uvr5_info, open_uvr5, close_uvr5])
-
-        with gr.TabItem(i18n("1-GPT-SoVITS-TTS")):
-            with gr.Accordion(i18n("微调模型信息")):
+            )
+            with gr.Accordion("实验与模型版本", open=True):
                 with gr.Row():
                     with gr.Row(equal_height=True):
                         exp_name = gr.Textbox(
                             label=i18n("*实验/模型名"),
-                            value="xxx",
+                            value="voice_experiment",
+                            placeholder="为本次训练起一个名字",
                             interactive=True,
                             scale=3,
                         )
@@ -1544,6 +1610,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                         )
                         version_checkbox = gr.Radio(
                             label=i18n("训练模型的版本"),
+                            info="单选。一般微调可选 v2Pro / v2ProPlus；高音质录音可选 v4。v5 主要用于直接推理，少样本微调尚未充分验证。",
                             value=version,
                             choices=["v2", "v2Pro", "v2ProPlus", "v4", "v5dev", "v5turbo"],
                             scale=5,
@@ -1569,7 +1636,9 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                         )
                         pretrained_s2D = gr.Textbox(
                             label=i18n("预训练SoVITS-D模型路径"),
-                            value=pretrained_sovits_name[version].replace("s2G", "s2D") if version not in v3v4set else "",
+                            value=pretrained_sovits_name[version].replace("s2G", "s2D")
+                            if version not in v3v4set
+                            else "",
                             visible=version not in v3v4set,
                             interactive=True,
                             lines=1,
@@ -1577,453 +1646,486 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                             scale=5,
                         )
 
-            with gr.TabItem("1A-" + i18n("训练集格式化工具")):
-                with gr.Accordion(label=i18n("输出logs/实验名目录下应有23456开头的文件和文件夹")):
-                    with gr.Row():
+            with gr.Tabs(selected="format") as training_workspace:
+                with gr.TabItem("1 · 数据格式化", id="format"):
+                    with gr.Accordion(label="数据集输入 · 审核后自动填入", open=True):
                         with gr.Row():
-                            inp_text = gr.Textbox(
-                                label=i18n("*文本标注文件"),
-                                value=r"D:\RVC1006\GPT-SoVITS\raw\xxx.list",
-                                interactive=True,
-                                scale=10,
-                            )
-                        with gr.Row():
-                            inp_wav_dir = gr.Textbox(
-                                label=i18n("*训练集音频文件目录"),
-                                # value=r"D:\RVC1006\GPT-SoVITS\raw\xxx",
-                                interactive=True,
-                                placeholder=i18n(
-                                    "填切割后音频所在目录！读取的音频文件完整路径=该目录-拼接-list文件里波形对应的文件名（不是全路径）。如果留空则使用.list文件里的绝对全路径。"
-                                ),
-                                scale=10,
-                            )
-
-                with gr.Accordion(label="1Aa-" + process_name_1a):
-                    with gr.Row():
-                        with gr.Row():
-                            gpu_numbers1a = gr.Textbox(
-                                label=i18n("GPU卡号以-分割，每个卡号一个进程"),
-                                value="%s-%s" % (gpus, gpus),
-                                interactive=True,
-                            )
-                        with gr.Row():
-                            bert_pretrained_dir = gr.Textbox(
-                                label=i18n("预训练中文BERT模型路径"),
-                                value="GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large",
-                                interactive=False,
-                                lines=2,
-                            )
-                        with gr.Row():
-                            button1a_open = gr.Button(
-                                value=process_info(process_name_1a, "open"), variant="primary", visible=True
-                            )
-                            button1a_close = gr.Button(
-                                value=process_info(process_name_1a, "close"), variant="primary", visible=False
-                            )
-                        with gr.Row():
-                            info1a = gr.Textbox(label=process_info(process_name_1a, "info"))
-
-                with gr.Accordion(label="1Ab-" + process_name_1b):
-                    with gr.Row():
-                        with gr.Row():
-                            gpu_numbers1Ba = gr.Textbox(
-                                label=i18n("GPU卡号以-分割，每个卡号一个进程"),
-                                value="%s-%s" % (gpus, gpus),
-                                interactive=True,
-                            )
-                        with gr.Row():
-                            cnhubert_base_dir = gr.Textbox(
-                                label=i18n("预训练SSL模型路径"),
-                                value="GPT_SoVITS/pretrained_models/chinese-hubert-base",
-                                interactive=False,
-                                lines=2,
-                            )
-                        with gr.Row():
-                            button1b_open = gr.Button(
-                                value=process_info(process_name_1b, "open"), variant="primary", visible=True
-                            )
-                            button1b_close = gr.Button(
-                                value=process_info(process_name_1b, "close"), variant="primary", visible=False
-                            )
-                        with gr.Row():
-                            info1b = gr.Textbox(label=process_info(process_name_1b, "info"))
-
-                with gr.Accordion(label="1Ac-" + process_name_1c):
-                    with gr.Row():
-                        with gr.Row():
-                            gpu_numbers1c = gr.Textbox(
-                                label=i18n("GPU卡号以-分割，每个卡号一个进程"),
-                                value="%s-%s" % (gpus, gpus),
-                                interactive=True,
-                            )
-                        with gr.Row():
-                            pretrained_s2G_ = gr.Textbox(
-                                label=i18n("预训练SoVITS-G模型路径"),
-                                value=pretrained_sovits_name[version],
-                                interactive=False,
-                                lines=2,
-                            )
-                        with gr.Row():
-                            button1c_open = gr.Button(
-                                value=process_info(process_name_1c, "open"), variant="primary", visible=True
-                            )
-                            button1c_close = gr.Button(
-                                value=process_info(process_name_1c, "close"), variant="primary", visible=False
-                            )
-                        with gr.Row():
-                            info1c = gr.Textbox(label=process_info(process_name_1c, "info"))
-
-                with gr.Accordion(label="1Aabc-" + process_name_1abc):
-                    with gr.Row():
-                        with gr.Row():
-                            button1abc_open = gr.Button(
-                                value=process_info(process_name_1abc, "open"), variant="primary", visible=True
-                            )
-                            button1abc_close = gr.Button(
-                                value=process_info(process_name_1abc, "close"), variant="primary", visible=False
-                            )
-                        with gr.Row():
-                            info1abc = gr.Textbox(label=process_info(process_name_1abc, "info"))
-
-            pretrained_s2G.change(sync, [pretrained_s2G], [pretrained_s2G_])
-            open_asr_button.click(
-                open_asr,
-                [asr_inp_dir, asr_opt_dir, asr_model, asr_size, asr_lang, asr_precision],
-                [asr_info, open_asr_button, close_asr_button, path_list, inp_text, inp_wav_dir],
-            )
-            close_asr_button.click(close_asr, [], [asr_info, open_asr_button, close_asr_button])
-            open_slicer_button.click(
-                open_slice,
-                [
-                    slice_inp_path,
-                    slice_opt_root,
-                    threshold,
-                    min_length,
-                    min_interval,
-                    hop_size,
-                    max_sil_kept,
-                    _max,
-                    alpha,
-                    n_process,
-                ],
-                [slicer_info, open_slicer_button, close_slicer_button, asr_inp_dir, denoise_input_dir, inp_wav_dir],
-            )
-            close_slicer_button.click(close_slice, [], [slicer_info, open_slicer_button, close_slicer_button])
-            open_denoise_button.click(
-                open_denoise,
-                [denoise_input_dir, denoise_output_dir],
-                [denoise_info, open_denoise_button, close_denoise_button, asr_inp_dir, inp_wav_dir],
-            )
-            close_denoise_button.click(close_denoise, [], [denoise_info, open_denoise_button, close_denoise_button])
-
-            button1a_open.click(
-                open1a,
-                [inp_text, inp_wav_dir, exp_name, gpu_numbers1a, bert_pretrained_dir],
-                [info1a, button1a_open, button1a_close],
-            )
-            button1a_close.click(close1a, [], [info1a, button1a_open, button1a_close])
-            button1b_open.click(
-                open1b,
-                [version_checkbox, inp_text, inp_wav_dir, exp_name, gpu_numbers1Ba, cnhubert_base_dir],
-                [info1b, button1b_open, button1b_close],
-            )
-            button1b_close.click(close1b, [], [info1b, button1b_open, button1b_close])
-            button1c_open.click(
-                open1c,
-                [version_checkbox, inp_text, inp_wav_dir, exp_name, gpu_numbers1c, pretrained_s2G],
-                [info1c, button1c_open, button1c_close],
-            )
-            button1c_close.click(close1c, [], [info1c, button1c_open, button1c_close])
-            button1abc_open.click(
-                open1abc,
-                [
-                    version_checkbox,
-                    inp_text,
-                    inp_wav_dir,
-                    exp_name,
-                    gpu_numbers1a,
-                    gpu_numbers1Ba,
-                    gpu_numbers1c,
-                    bert_pretrained_dir,
-                    cnhubert_base_dir,
-                    pretrained_s2G,
-                ],
-                [info1abc, button1abc_open, button1abc_close],
-            )
-            button1abc_close.click(close1abc, [], [info1abc, button1abc_open, button1abc_close])
-
-            with gr.TabItem("1B-" + i18n("微调训练")):
-                with gr.Accordion(label="1Ba-" + i18n("SoVITS 训练: 模型权重文件在 SoVITS_weights/")):
-                    with gr.Row():
-                        with gr.Column():
                             with gr.Row():
-                                batch_size = gr.Slider(
-                                    minimum=1,
-                                    maximum=default_max_batch_size,
-                                    step=1,
-                                    label=i18n("每张显卡的batch_size"),
-                                    value=default_batch_size,
+                                inp_text = gr.Textbox(
+                                    label=i18n("*文本标注文件"),
+                                    value="",
+                                    placeholder="审核后自动填入，或输入已有 .list 标注文件路径",
                                     interactive=True,
-                                )
-                                total_epoch = gr.Slider(
-                                    minimum=1,
-                                    maximum=max_sovits_epoch,
-                                    step=1,
-                                    label=i18n("总训练轮数total_epoch，不建议太高"),
-                                    value=default_sovits_epoch,
-                                    interactive=True,
+                                    scale=10,
                                 )
                             with gr.Row():
-                                text_low_lr_rate = gr.Slider(
-                                    minimum=0.2,
-                                    maximum=0.6,
-                                    step=0.05,
-                                    label=i18n("文本模块学习率权重"),
-                                    value=0.4,
-                                    visible=True if version not in v3v4set else False,
-                                )  # v3v4 not need
-                                lora_rank = gr.Radio(
-                                    label=i18n("LoRA秩"),
-                                    value="32",
-                                    choices=["16", "32", "64", "128"],
-                                    visible=True if version in v3v4set else False,
-                                )  # v1v2 not need
-                                save_every_epoch = gr.Slider(
-                                    minimum=1,
-                                    maximum=max_sovits_save_every_epoch,
-                                    step=1,
-                                    label=i18n("保存频率save_every_epoch"),
-                                    value=default_sovits_save_every_epoch,
+                                inp_wav_dir = gr.Textbox(
+                                    label=i18n("*训练集音频文件目录"),
                                     interactive=True,
+                                    placeholder="切分后的音频目录（审核后自动填入）",
+                                    info="可留空以使用标注文件中的绝对路径。",
+                                    scale=10,
                                 )
-                        with gr.Column():
-                            with gr.Column():
-                                if_save_latest = gr.Checkbox(
-                                    label=i18n("是否仅保存最新的权重文件以节省硬盘空间"),
-                                    value=True,
-                                    interactive=True,
-                                    show_label=True,
+
+                    with gr.Accordion(label="提取训练特征 · 一键完成", open=True):
+                        gr.Markdown("依次生成文本特征、语音特征和语义特征。完成后进入‘2 · 模型训练’。")
+                        with gr.Row():
+                            with gr.Row():
+                                button1abc_open = gr.Button(
+                                    value=process_info(process_name_1abc, "open"),
+                                    variant="primary",
+                                    visible=True,
+                                    scale=0,
+                                    min_width=0,
+                                    size="sm",
                                 )
-                                if_save_every_weights = gr.Checkbox(
-                                    label=i18n("是否在每次保存时间点将最终小模型保存至weights文件夹"),
-                                    value=True,
-                                    interactive=True,
-                                    show_label=True,
-                                )
-                                if_grad_ckpt = gr.Checkbox(
-                                    label="v3是否开启梯度检查点节省显存占用",
-                                    value=False,
-                                    interactive=True if version in v3v4set else False,
-                                    show_label=True,
+                                button1abc_close = gr.Button(
+                                    value=process_info(process_name_1abc, "close"),
+                                    variant="stop",
                                     visible=False,
-                                )  # 只有V3s2可以用
-                            with gr.Row():
-                                gpu_numbers1Ba = gr.Textbox(
-                                    label=i18n("GPU卡号以-分割，每个卡号一个进程"),
-                                    value="%s" % (gpus),
-                                    interactive=True,
-                                )
-                    with gr.Row():
-                        with gr.Row():
-                            button1Ba_open = gr.Button(
-                                value=process_info(process_name_sovits, "open"), variant="primary", visible=True
-                            )
-                            button1Ba_close = gr.Button(
-                                value=process_info(process_name_sovits, "close"), variant="primary", visible=False
-                            )
-                        with gr.Row():
-                            info1Ba = gr.Textbox(label=process_info(process_name_sovits, "info"))
-                with gr.Accordion(label="1Bb-" + i18n("GPT 训练: 模型权重文件在 GPT_weights/")):
-                    with gr.Row():
-                        with gr.Column():
-                            with gr.Row():
-                                batch_size1Bb = gr.Slider(
-                                    minimum=1,
-                                    maximum=40,
-                                    step=1,
-                                    label=i18n("每张显卡的batch_size"),
-                                    value=default_batch_size_s1,
-                                    interactive=True,
-                                )
-                                total_epoch1Bb = gr.Slider(
-                                    minimum=2,
-                                    maximum=50,
-                                    step=1,
-                                    label=i18n("总训练轮数total_epoch"),
-                                    value=15,
-                                    interactive=True,
+                                    scale=0,
+                                    min_width=0,
+                                    size="sm",
                                 )
                             with gr.Row():
-                                save_every_epoch1Bb = gr.Slider(
-                                    minimum=1,
-                                    maximum=50,
-                                    step=1,
-                                    label=i18n("保存频率save_every_epoch"),
-                                    value=5,
-                                    interactive=True,
-                                )
-                                if_dpo = gr.Checkbox(
-                                    label=i18n("是否开启DPO训练选项(实验性)"),
-                                    value=False,
-                                    interactive=True,
-                                    show_label=True,
-                                )
-                        with gr.Column():
-                            with gr.Column():
-                                if_save_latest1Bb = gr.Checkbox(
-                                    label=i18n("是否仅保存最新的权重文件以节省硬盘空间"),
-                                    value=True,
-                                    interactive=True,
-                                    show_label=True,
-                                )
-                                if_save_every_weights1Bb = gr.Checkbox(
-                                    label=i18n("是否在每次保存时间点将最终小模型保存至weights文件夹"),
-                                    value=True,
-                                    interactive=True,
-                                    show_label=True,
-                                )
-                            with gr.Row():
-                                gpu_numbers1Bb = gr.Textbox(
-                                    label=i18n("GPU卡号以-分割，每个卡号一个进程"),
-                                    value="%s" % (gpus),
-                                    interactive=True,
-                                )
-                    with gr.Row():
-                        with gr.Row():
-                            button1Bb_open = gr.Button(
-                                value=process_info(process_name_gpt, "open"), variant="primary", visible=True
-                            )
-                            button1Bb_close = gr.Button(
-                                value=process_info(process_name_gpt, "close"), variant="primary", visible=False
-                            )
-                        with gr.Row():
-                            info1Bb = gr.Textbox(label=process_info(process_name_gpt, "info"))
+                                info1abc = gr.Textbox(label=process_info(process_name_1abc, "info"))
 
-            button1Ba_close.click(close1Ba, [], [info1Ba, button1Ba_open, button1Ba_close])
-            button1Bb_close.click(close1Bb, [], [info1Bb, button1Bb_open, button1Bb_close])
+                    with gr.Accordion("分别执行特征步骤与设备配置（高级）", open=False):
+                        with gr.Accordion(label="1Aa-" + process_name_1a):
+                            with gr.Row():
+                                with gr.Row():
+                                    gpu_numbers1a = gr.Textbox(
+                                        label=i18n("GPU卡号以-分割，每个卡号一个进程"),
+                                        value="%s-%s" % (gpus, gpus),
+                                        interactive=True,
+                                    )
+                                with gr.Row():
+                                    bert_pretrained_dir = gr.Textbox(
+                                        label=i18n("预训练中文BERT模型路径"),
+                                        value="GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large",
+                                        interactive=False,
+                                        lines=2,
+                                    )
+                                with gr.Row():
+                                    button1a_open = gr.Button(
+                                        value=process_info(process_name_1a, "open"),
+                                        variant="primary",
+                                        visible=True,
+                                        scale=0,
+                                        min_width=0,
+                                        size="sm",
+                                    )
+                                    button1a_close = gr.Button(
+                                        value=process_info(process_name_1a, "close"),
+                                        variant="stop",
+                                        visible=False,
+                                        scale=0,
+                                        min_width=0,
+                                        size="sm",
+                                    )
+                                with gr.Row():
+                                    info1a = gr.Textbox(label=process_info(process_name_1a, "info"))
 
-            with gr.TabItem("1C-" + i18n("推理")):
-                gr.Markdown(
-                    value=i18n(
-                        "选择训练完存放在SoVITS_weights和GPT_weights下的模型。默认的几个是底模，体验5秒Zero Shot TTS不训练推理用。"
-                    )
+                        with gr.Accordion(label="1Ab-" + process_name_1b):
+                            with gr.Row():
+                                with gr.Row():
+                                    gpu_numbers1Ba = gr.Textbox(
+                                        label=i18n("GPU卡号以-分割，每个卡号一个进程"),
+                                        value="%s-%s" % (gpus, gpus),
+                                        interactive=True,
+                                    )
+                                with gr.Row():
+                                    cnhubert_base_dir = gr.Textbox(
+                                        label=i18n("预训练SSL模型路径"),
+                                        value="GPT_SoVITS/pretrained_models/chinese-hubert-base",
+                                        interactive=False,
+                                        lines=2,
+                                    )
+                                with gr.Row():
+                                    button1b_open = gr.Button(
+                                        value=process_info(process_name_1b, "open"),
+                                        variant="primary",
+                                        visible=True,
+                                        scale=0,
+                                        min_width=0,
+                                        size="sm",
+                                    )
+                                    button1b_close = gr.Button(
+                                        value=process_info(process_name_1b, "close"),
+                                        variant="stop",
+                                        visible=False,
+                                        scale=0,
+                                        min_width=0,
+                                        size="sm",
+                                    )
+                                with gr.Row():
+                                    info1b = gr.Textbox(label=process_info(process_name_1b, "info"))
+
+                        with gr.Accordion(label="1Ac-" + process_name_1c):
+                            with gr.Row():
+                                with gr.Row():
+                                    gpu_numbers1c = gr.Textbox(
+                                        label=i18n("GPU卡号以-分割，每个卡号一个进程"),
+                                        value="%s-%s" % (gpus, gpus),
+                                        interactive=True,
+                                    )
+                                with gr.Row():
+                                    pretrained_s2G_ = gr.Textbox(
+                                        label=i18n("预训练SoVITS-G模型路径"),
+                                        value=pretrained_sovits_name[version],
+                                        interactive=False,
+                                        lines=2,
+                                    )
+                                with gr.Row():
+                                    button1c_open = gr.Button(
+                                        value=process_info(process_name_1c, "open"),
+                                        variant="primary",
+                                        visible=True,
+                                        scale=0,
+                                        min_width=0,
+                                        size="sm",
+                                    )
+                                    button1c_close = gr.Button(
+                                        value=process_info(process_name_1c, "close"),
+                                        variant="stop",
+                                        visible=False,
+                                        scale=0,
+                                        min_width=0,
+                                        size="sm",
+                                    )
+                                with gr.Row():
+                                    info1c = gr.Textbox(label=process_info(process_name_1c, "info"))
+
+                pretrained_s2G.change(sync, [pretrained_s2G], [pretrained_s2G_])
+                open_asr_button.click(
+                    open_asr,
+                    [asr_inp_dir, asr_opt_dir, asr_model, asr_size, asr_lang, asr_precision],
+                    [asr_info, open_asr_button, close_asr_button, path_list, inp_text, inp_wav_dir],
                 )
-                with gr.Row():
-                    with gr.Column(scale=2):
+                close_asr_button.click(close_asr, [], [asr_info, open_asr_button, close_asr_button])
+                open_slicer_button.click(
+                    open_slice,
+                    [
+                        slice_inp_path,
+                        slice_opt_root,
+                        threshold,
+                        min_length,
+                        min_interval,
+                        hop_size,
+                        max_sil_kept,
+                        _max,
+                        alpha,
+                        n_process,
+                    ],
+                    [
+                        slicer_info,
+                        open_slicer_button,
+                        close_slicer_button,
+                        asr_inp_dir,
+                        denoise_input_dir,
+                        inp_wav_dir,
+                    ],
+                )
+                close_slicer_button.click(close_slice, [], [slicer_info, open_slicer_button, close_slicer_button])
+                open_denoise_button.click(
+                    open_denoise,
+                    [denoise_input_dir, denoise_output_dir],
+                    [denoise_info, open_denoise_button, close_denoise_button, asr_inp_dir, inp_wav_dir],
+                )
+                close_denoise_button.click(
+                    close_denoise, [], [denoise_info, open_denoise_button, close_denoise_button]
+                )
+
+                button1a_open.click(
+                    open1a,
+                    [inp_text, inp_wav_dir, exp_name, gpu_numbers1a, bert_pretrained_dir],
+                    [info1a, button1a_open, button1a_close],
+                )
+                button1a_close.click(close1a, [], [info1a, button1a_open, button1a_close])
+                button1b_open.click(
+                    open1b,
+                    [version_checkbox, inp_text, inp_wav_dir, exp_name, gpu_numbers1Ba, cnhubert_base_dir],
+                    [info1b, button1b_open, button1b_close],
+                )
+                button1b_close.click(close1b, [], [info1b, button1b_open, button1b_close])
+                button1c_open.click(
+                    open1c,
+                    [version_checkbox, inp_text, inp_wav_dir, exp_name, gpu_numbers1c, pretrained_s2G],
+                    [info1c, button1c_open, button1c_close],
+                )
+                button1c_close.click(close1c, [], [info1c, button1c_open, button1c_close])
+                button1abc_open.click(
+                    open1abc,
+                    [
+                        version_checkbox,
+                        inp_text,
+                        inp_wav_dir,
+                        exp_name,
+                        gpu_numbers1a,
+                        gpu_numbers1Ba,
+                        gpu_numbers1c,
+                        bert_pretrained_dir,
+                        cnhubert_base_dir,
+                        pretrained_s2G,
+                    ],
+                    [info1abc, button1abc_open, button1abc_close],
+                )
+                button1abc_close.click(close1abc, [], [info1abc, button1abc_open, button1abc_close])
+
+                with gr.TabItem("2 · 模型训练", id="fit"):
+                    with gr.Accordion(label="音色模型 · SoVITS", open=True):
+                        gr.Markdown("学习说话人的音色。完成后权重保存在 SoVITS_weights 对应版本目录。")
                         with gr.Row():
-                            GPT_dropdown = gr.Dropdown(
-                                label=i18n("GPT模型列表"),
-                                choices=GPT_names,
-                                value=GPT_names[-1],
-                                interactive=True,
-                            )
-                            SoVITS_dropdown = gr.Dropdown(
-                                label=i18n("SoVITS模型列表"),
-                                choices=SoVITS_names,
-                                value=SoVITS_names[0],
-                                interactive=True,
-                            )
-                    with gr.Column(scale=2):
+                            with gr.Column():
+                                with gr.Row():
+                                    batch_size = gr.Slider(
+                                        minimum=1,
+                                        maximum=default_max_batch_size,
+                                        step=1,
+                                        label=i18n("每张显卡的batch_size"),
+                                        value=default_batch_size,
+                                        interactive=True,
+                                    )
+                                    total_epoch = gr.Slider(
+                                        minimum=1,
+                                        maximum=max_sovits_epoch,
+                                        step=1,
+                                        label=i18n("总训练轮数total_epoch，不建议太高"),
+                                        value=default_sovits_epoch,
+                                        interactive=True,
+                                    )
+                                with gr.Row():
+                                    text_low_lr_rate = gr.Slider(
+                                        minimum=0.2,
+                                        maximum=0.6,
+                                        step=0.05,
+                                        label=i18n("文本模块学习率权重"),
+                                        value=0.4,
+                                        visible=True if version not in v3v4set else False,
+                                    )  # v3v4 not need
+                                    lora_rank = gr.Radio(
+                                        label=i18n("LoRA秩"),
+                                        value="32",
+                                        choices=["16", "32", "64", "128"],
+                                        visible=True if version in v3v4set else False,
+                                    )  # v1v2 not need
+                                    save_every_epoch = gr.Slider(
+                                        minimum=1,
+                                        maximum=max_sovits_save_every_epoch,
+                                        step=1,
+                                        label=i18n("保存频率save_every_epoch"),
+                                        value=default_sovits_save_every_epoch,
+                                        interactive=True,
+                                    )
+                            with gr.Column():
+                                with gr.Column():
+                                    if_save_latest = gr.Checkbox(
+                                        label=i18n("是否仅保存最新的权重文件以节省硬盘空间"),
+                                        value=True,
+                                        interactive=True,
+                                        show_label=True,
+                                    )
+                                    if_save_every_weights = gr.Checkbox(
+                                        label=i18n("是否在每次保存时间点将最终小模型保存至weights文件夹"),
+                                        value=True,
+                                        interactive=True,
+                                        show_label=True,
+                                    )
+                                    if_grad_ckpt = gr.Checkbox(
+                                        label="v3是否开启梯度检查点节省显存占用",
+                                        value=False,
+                                        interactive=True if version in v3v4set else False,
+                                        show_label=True,
+                                        visible=False,
+                                    )  # 只有V3s2可以用
+                                with gr.Row():
+                                    gpu_numbers1Ba = gr.Textbox(
+                                        label=i18n("GPU卡号以-分割，每个卡号一个进程"),
+                                        value="%s" % (gpus),
+                                        interactive=True,
+                                    )
                         with gr.Row():
-                            gpu_number_1C = gr.Textbox(
-                                label=i18n("GPU卡号,只能填1个整数"), value=gpus, interactive=True
-                            )
-                            refresh_button = gr.Button(i18n("刷新模型路径"), variant="primary")
-                    refresh_button.click(fn=change_choices, inputs=[], outputs=[SoVITS_dropdown, GPT_dropdown])
-                with gr.Row(equal_height=True):
-                    with gr.Row():
-                        batched_infer_enabled = gr.Checkbox(
-                            label=i18n("启用并行推理版本"), value=False, interactive=True, show_label=True
-                        )
-                        open_tts = gr.Button(
-                            value=process_info(process_name_tts, "open"), variant="primary", visible=True
-                        )
-                        close_tts = gr.Button(
-                            value=process_info(process_name_tts, "close"), variant="primary", visible=False
-                        )
-                    with gr.Column():
-                        tts_info = gr.Textbox(label=process_info(process_name_tts, "info"), scale=2)
-                    open_tts.click(
-                        change_tts_inference,
-                        [
-                            bert_pretrained_dir,
-                            cnhubert_base_dir,
-                            gpu_number_1C,
-                            GPT_dropdown,
-                            SoVITS_dropdown,
-                            batched_infer_enabled,
-                        ],
-                        [tts_info, open_tts, close_tts],
-                    )
-                    close_tts.click(
-                        change_tts_inference,
-                        [
-                            bert_pretrained_dir,
-                            cnhubert_base_dir,
-                            gpu_number_1C,
-                            GPT_dropdown,
-                            SoVITS_dropdown,
-                            batched_infer_enabled,
-                        ],
-                        [tts_info, open_tts, close_tts],
-                    )
-            button1Ba_open.click(
-                open1Ba,
-                [
-                    version_checkbox,
-                    batch_size,
-                    total_epoch,
-                    exp_name,
-                    text_low_lr_rate,
-                    if_save_latest,
-                    if_save_every_weights,
-                    save_every_epoch,
-                    gpu_numbers1Ba,
-                    pretrained_s2G,
-                    pretrained_s2D,
-                    if_grad_ckpt,
-                    lora_rank,
-                ],
-                [info1Ba, button1Ba_open, button1Ba_close, SoVITS_dropdown, GPT_dropdown],
+                            with gr.Row():
+                                button1Ba_open = gr.Button(
+                                    value=process_info(process_name_sovits, "open"),
+                                    variant="primary",
+                                    visible=True,
+                                    scale=0,
+                                    min_width=0,
+                                    size="sm",
+                                )
+                                button1Ba_close = gr.Button(
+                                    value=process_info(process_name_sovits, "close"),
+                                    variant="stop",
+                                    visible=False,
+                                    scale=0,
+                                    min_width=0,
+                                    size="sm",
+                                )
+                            with gr.Row():
+                                info1Ba = gr.Textbox(label=process_info(process_name_sovits, "info"))
+                    with gr.Accordion(label="语言模型 · GPT", open=True):
+                        gr.Markdown("学习文本到语音的表达。完成后权重保存在 GPT_weights 对应版本目录。")
+                        with gr.Row():
+                            with gr.Column():
+                                with gr.Row():
+                                    batch_size1Bb = gr.Slider(
+                                        minimum=1,
+                                        maximum=40,
+                                        step=1,
+                                        label=i18n("每张显卡的batch_size"),
+                                        value=default_batch_size_s1,
+                                        interactive=True,
+                                    )
+                                    total_epoch1Bb = gr.Slider(
+                                        minimum=2,
+                                        maximum=50,
+                                        step=1,
+                                        label=i18n("总训练轮数total_epoch"),
+                                        value=15,
+                                        interactive=True,
+                                    )
+                                with gr.Row():
+                                    save_every_epoch1Bb = gr.Slider(
+                                        minimum=1,
+                                        maximum=50,
+                                        step=1,
+                                        label=i18n("保存频率save_every_epoch"),
+                                        value=5,
+                                        interactive=True,
+                                    )
+                                    if_dpo = gr.Checkbox(
+                                        label=i18n("是否开启DPO训练选项(实验性)"),
+                                        value=False,
+                                        interactive=True,
+                                        show_label=True,
+                                    )
+                            with gr.Column():
+                                with gr.Column():
+                                    if_save_latest1Bb = gr.Checkbox(
+                                        label=i18n("是否仅保存最新的权重文件以节省硬盘空间"),
+                                        value=True,
+                                        interactive=True,
+                                        show_label=True,
+                                    )
+                                    if_save_every_weights1Bb = gr.Checkbox(
+                                        label=i18n("是否在每次保存时间点将最终小模型保存至weights文件夹"),
+                                        value=True,
+                                        interactive=True,
+                                        show_label=True,
+                                    )
+                                with gr.Row():
+                                    gpu_numbers1Bb = gr.Textbox(
+                                        label=i18n("GPU卡号以-分割，每个卡号一个进程"),
+                                        value="%s" % (gpus),
+                                        interactive=True,
+                                    )
+                        with gr.Row():
+                            with gr.Row():
+                                button1Bb_open = gr.Button(
+                                    value=process_info(process_name_gpt, "open"),
+                                    variant="primary",
+                                    visible=True,
+                                    scale=0,
+                                    min_width=0,
+                                    size="sm",
+                                )
+                                button1Bb_close = gr.Button(
+                                    value=process_info(process_name_gpt, "close"),
+                                    variant="stop",
+                                    visible=False,
+                                    scale=0,
+                                    min_width=0,
+                                    size="sm",
+                                )
+                            with gr.Row():
+                                info1Bb = gr.Textbox(label=process_info(process_name_gpt, "info"))
+
+        with gr.TabItem("TTS 推理", id="inference"):
+            tts_workspace = build_tts_workspace(
+                GPT_names,
+                SoVITS_names,
+                gpus,
+                version_checkbox,
+                bert_pretrained_dir,
+                cnhubert_base_dir,
+                gpu_mapper=fix_gpu_number,
+                busy=auto_dataset_busy,
+                ensure_idle=ensure_auto_dataset_idle,
             )
-            button1Bb_open.click(
-                open1Bb,
-                [
-                    batch_size1Bb,
-                    total_epoch1Bb,
-                    exp_name,
-                    if_dpo,
-                    if_save_latest1Bb,
-                    if_save_every_weights1Bb,
-                    save_every_epoch1Bb,
-                    gpu_numbers1Bb,
-                    pretrained_s1,
-                ],
-                [info1Bb, button1Bb_open, button1Bb_close, SoVITS_dropdown, GPT_dropdown],
-            )
-            version_checkbox.change(
-                switch_version,
-                [version_checkbox],
-                [
-                    pretrained_s2G,
-                    pretrained_s2D,
-                    pretrained_s1,
-                    GPT_dropdown,
-                    SoVITS_dropdown,
-                    batch_size,
-                    total_epoch,
-                    save_every_epoch,
-                    text_low_lr_rate,
-                    if_grad_ckpt,
-                    batched_infer_enabled,
-                    lora_rank,
-                ],
+            GPT_dropdown = tts_workspace["gpt"]
+            SoVITS_dropdown = tts_workspace["sovits"]
+            batched_infer_enabled = tts_workspace["parallel"]
+            tts_workspace["refresh"].click(fn=change_choices, inputs=[], outputs=[SoVITS_dropdown, GPT_dropdown])
+        with gr.TabItem("So-VITS-SVC", id="svc"):
+            gr.HTML(workspace_header("So-VITS-SVC · 音色转换", "独立的歌声音色数据集、专属模型训练和音频转换工作区。"))
+            gr.HTML(
+                '<div class="empty-workspace"><strong>功能开发中</strong>此入口用于后续 SVC 数据集准备、训练和转换流程。</div>'
             )
 
-        with gr.TabItem(i18n("2-GPT-SoVITS-变声")):
-            gr.Markdown(value=i18n("施工中，请静候佳音"))
+    button1Ba_close.click(close1Ba, [], [info1Ba, button1Ba_open, button1Ba_close])
+    button1Bb_close.click(close1Bb, [], [info1Bb, button1Bb_open, button1Bb_close])
 
-    bind_auto_dataset_training(auto_dataset_page, path_list, inp_text, inp_wav_dir, exp_name, open_auto_dataset_editor)
+    button1Ba_open.click(
+        open1Ba,
+        [
+            version_checkbox,
+            batch_size,
+            total_epoch,
+            exp_name,
+            text_low_lr_rate,
+            if_save_latest,
+            if_save_every_weights,
+            save_every_epoch,
+            gpu_numbers1Ba,
+            pretrained_s2G,
+            pretrained_s2D,
+            if_grad_ckpt,
+            lora_rank,
+        ],
+        [info1Ba, button1Ba_open, button1Ba_close, SoVITS_dropdown, GPT_dropdown],
+    )
+    button1Bb_open.click(
+        open1Bb,
+        [
+            batch_size1Bb,
+            total_epoch1Bb,
+            exp_name,
+            if_dpo,
+            if_save_latest1Bb,
+            if_save_every_weights1Bb,
+            save_every_epoch1Bb,
+            gpu_numbers1Bb,
+            pretrained_s1,
+        ],
+        [info1Bb, button1Bb_open, button1Bb_close, SoVITS_dropdown, GPT_dropdown],
+    )
+    version_checkbox.change(
+        switch_version,
+        [version_checkbox],
+        [
+            pretrained_s2G,
+            pretrained_s2D,
+            pretrained_s1,
+            GPT_dropdown,
+            SoVITS_dropdown,
+            batch_size,
+            total_epoch,
+            save_every_epoch,
+            text_low_lr_rate,
+            if_grad_ckpt,
+            batched_infer_enabled,
+            lora_rank,
+        ],
+    )
+
+    review_handoff = bind_auto_dataset_training(
+        auto_dataset_page, path_list, inp_text, inp_wav_dir, exp_name, open_auto_dataset_editor
+    )
+    review_handoff.success(
+        lambda: (gr.update(selected="training"), gr.update(selected="format")),
+        outputs=[workspace_navigation, training_workspace],
+    )
 
     app.queue().launch(  # concurrency_count=511, max_size=1022
         server_name="0.0.0.0",
