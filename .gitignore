@@ -6,6 +6,7 @@ env
 runtime
 .idea
 output
+input/
 logs
 SoVITS_weights*/
 GPT_weights*/

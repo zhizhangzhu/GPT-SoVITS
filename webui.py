@@ -142,13 +142,14 @@ gpus = "-".join(map(str, GPU_INDEX))
 default_gpu_numbers = infer_device.index
 
 
-def fix_gpu_number(input):  # 将越界的number强制改到界内
+def fix_gpu_number(input):  # 将逻辑编号转换到子进程实际可见的物理编号
+    from tools.gpu_utils import subprocess_gpu_index
     try:
         if int(input) not in set_gpu_numbers:
-            return default_gpu_numbers
-    except:
+            input = default_gpu_numbers
+        return subprocess_gpu_index(input)
+    except (TypeError, ValueError):
         return input
-    return input
 
 
 def fix_gpu_numbers(inputs):
@@ -302,6 +303,7 @@ process_name_uvr5 = i18n("人声分离WebUI")
 def change_uvr5():
     global p_uvr5
     if p_uvr5 is None:
+        ensure_auto_dataset_idle()
         cmd = '"%s" -s tools/uvr5/webui.py "%s" %s %s %s' % (
             python_exec,
             infer_device,
@@ -371,6 +373,7 @@ process_name_asr = i18n("语音识别")
 
 def open_asr(asr_inp_dir, asr_opt_dir, asr_model, asr_model_size, asr_lang, asr_precision):
     global p_asr
+    ensure_auto_dataset_idle()
     if p_asr is None:
         asr_inp_dir = my_utils.clean_path(asr_inp_dir)
         asr_opt_dir = my_utils.clean_path(asr_opt_dir)
@@ -432,6 +435,7 @@ process_name_denoise = i18n("语音降噪")
 
 def open_denoise(denoise_inp_dir, denoise_opt_dir):
     global p_denoise
+    ensure_auto_dataset_idle()
     if p_denoise == None:
         denoise_inp_dir = my_utils.clean_path(denoise_inp_dir)
         denoise_opt_dir = my_utils.clean_path(denoise_opt_dir)
@@ -503,6 +507,7 @@ def open1Ba(
     lora_rank,
 ):
     global p_train_SoVITS
+    ensure_auto_dataset_idle()
     if p_train_SoVITS == None:
         exp_name = exp_name.rstrip(" ")
         config_file = (
@@ -528,7 +533,7 @@ def open1Ba(
         data["train"]["if_save_latest"] = if_save_latest
         data["train"]["if_save_every_weights"] = if_save_every_weights
         data["train"]["save_every_epoch"] = save_every_epoch
-        data["train"]["gpu_numbers"] = gpu_numbers1Ba
+        data["train"]["gpu_numbers"] = fix_gpu_numbers(gpu_numbers1Ba.replace("-", ",")).replace(",", "-")
         data["train"]["grad_ckpt"] = if_grad_ckpt
         data["train"]["lora_rank"] = lora_rank
         data["model"]["version"] = version
@@ -600,6 +605,7 @@ def open1Bb(
     pretrained_s1,
 ):
     global p_train_GPT
+    ensure_auto_dataset_idle()
     if p_train_GPT == None:
         exp_name = exp_name.rstrip(" ")
         with open(
@@ -780,6 +786,7 @@ process_name_1a = i18n("文本分词与特征提取")
 
 def open1a(inp_text, inp_wav_dir, exp_name, gpu_numbers, bert_pretrained_dir):
     global ps1a
+    ensure_auto_dataset_idle()
     inp_text = my_utils.clean_path(inp_text)
     inp_wav_dir = my_utils.clean_path(inp_wav_dir)
     if check_for_existance([inp_text, inp_wav_dir], is_dataset_processing=True):
@@ -870,6 +877,7 @@ process_name_1b = i18n("语音自监督特征提取")
 
 def open1b(version, inp_text, inp_wav_dir, exp_name, gpu_numbers, ssl_pretrained_dir):
     global ps1b
+    ensure_auto_dataset_idle()
     inp_text = my_utils.clean_path(inp_text)
     inp_wav_dir = my_utils.clean_path(inp_wav_dir)
     if check_for_existance([inp_text, inp_wav_dir], is_dataset_processing=True):
@@ -960,6 +968,7 @@ process_name_1c = i18n("语义Token提取")
 
 def open1c(version, inp_text, inp_wav_dir, exp_name, gpu_numbers, pretrained_s2G_path):
     global ps1c
+    ensure_auto_dataset_idle()
     inp_text = my_utils.clean_path(inp_text)
     if check_for_existance([inp_text, inp_wav_dir], is_dataset_processing=True):
         check_details([inp_text, inp_wav_dir], is_dataset_processing=True)
@@ -1057,6 +1066,7 @@ def open1abc(
     pretrained_s2G_path,
 ):
     global ps1abc
+    ensure_auto_dataset_idle()
     inp_text = my_utils.clean_path(inp_text)
     inp_wav_dir = my_utils.clean_path(inp_wav_dir)
     if check_for_existance([inp_text, inp_wav_dir], is_dataset_processing=True):
@@ -1303,6 +1313,44 @@ def sync(text):
     return {"__type__": "update", "value": text}
 
 
+def ensure_auto_dataset_idle():
+    from filelock import FileLock, Timeout
+    from tools.auto_dataset.service import PROCESSES
+    if any(p.poll() is None for p in list(PROCESSES.values())):
+        raise gr.Error("全自动数据集任务正在运行，请结束后再启动 GPU 训练或预处理")
+    os.makedirs(os.path.join(now_dir, "output"), exist_ok=True)
+    lock = FileLock(os.path.join(now_dir, "output", "auto_dataset-gpu.lock"))
+    try:
+        lock.acquire(timeout=0)
+        lock.release()
+    except Timeout:
+        raise gr.Error("全自动数据集任务正在使用 GPU，请结束后再启动训练或预处理")
+
+
+def auto_dataset_busy():
+    processes = [p_train_SoVITS, p_train_GPT, p_asr, p_denoise, p_uvr5]
+    processes += ps1a + ps1b + ps1c + ps1abc
+    return any(p is not None and p.poll() is None for p in processes)
+
+
+def open_auto_dataset_editor(annotation_path):
+    global p_label
+    if p_label is not None and p_label.poll() is None:
+        kill_process(p_label.pid, process_name_subfix)
+    p_label = Popen([
+        python_exec, "-s", "tools/subfix_webui.py", "--load_list", annotation_path,
+        "--webui_port_subfix", str(webui_port_subfix), "--is_share", str(is_share),
+    ], cwd=now_dir)
+    return (
+        f"音频标注 WebUI 已启动：[打开标注页面](http://127.0.0.1:{webui_port_subfix})。"
+        "保存修改后，回到本页点击‘重新读取标注结果’，再保存审核。"
+        f"远程使用 SSH 时需同时转发 {webui_port_subfix} 端口。"
+    )
+
+
+from tools.auto_dataset.ui import build_page as build_auto_dataset_page, bind_training as bind_auto_dataset_training
+
+
 with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css) as app:
     gr.HTML(
         top_html.format(
@@ -1313,6 +1361,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
     )
 
     with gr.Tabs():
+        auto_dataset_page = build_auto_dataset_page(busy=auto_dataset_busy)
         with gr.TabItem("0-" + i18n("前置数据集获取工具")):  # 提前随机切片防止uvr5爆内存->uvr5->slicer->asr->打标
             with gr.Accordion(label="0a-" + i18n("UVR5人声伴奏分离&去混响去延迟工具")):
                 with gr.Row():
@@ -1412,7 +1461,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                                 label=i18n("ASR 模型"),
                                 choices=list(asr_dict.keys()),
                                 interactive=True,
-                                value="达摩 ASR (中文)",
+                                value="达摩 ASR (中文经典)",
                             )
                             asr_size = gr.Dropdown(
                                 label=i18n("ASR 模型尺寸"), choices=["large"], interactive=True, value="large"
@@ -1973,6 +2022,8 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
 
         with gr.TabItem(i18n("2-GPT-SoVITS-变声")):
             gr.Markdown(value=i18n("施工中，请静候佳音"))
+
+    bind_auto_dataset_training(auto_dataset_page, path_list, inp_text, inp_wav_dir, exp_name, open_auto_dataset_editor)
 
     app.queue().launch(  # concurrency_count=511, max_size=1022
         server_name="0.0.0.0",

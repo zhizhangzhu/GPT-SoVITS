@@ -58,7 +58,7 @@ def b_change_index(index, batch):
             #     label=f"Text {i+index}",
             #     value=_[g_json_key_text]#text
             # )
-            {"__type__": "update", "label": f"Text {i + index}", "value": _[g_json_key_text]}
+            {"__type__": "update", "label": f"Text {i + index} [{g_data_json[i + index].get('language', '')}] {g_data_json[i + index].get('speaker_name', '')}", "value": _[g_json_key_text]}
         )
     for _ in range(g_batch - len(datas)):
         output.append(
