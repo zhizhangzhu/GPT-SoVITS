@@ -2108,6 +2108,9 @@ with gr.Blocks(
         outputs=[workspace_navigation, training_workspace],
     )
 
+    app.load(svc_workspace["refresh_model_labels"],inputs=[svc_workspace["model_choice"]],
+             outputs=[svc_workspace["model_choice"],svc_workspace["model_details"]],
+             queue=False,show_progress="hidden")
     app.queue().launch(  # concurrency_count=511, max_size=1022
         app_kwargs={"routes":svc_download_router.routes},
         server_name="0.0.0.0",

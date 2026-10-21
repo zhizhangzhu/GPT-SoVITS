@@ -133,6 +133,19 @@ def conversion_choices():
     return trained + imported
 
 
+def conversion_description(selection):
+    if not selection:return "选择已训练实验或导入模型后开始转换。"
+    source,model_id=selection.split(':',1)
+    if source=='trained':
+        item=next(row for row in service.experiments() if row['id']==model_id)
+        return f"**自己训练 · {escape(item['name'])}** · 选择要使用的检查点。"
+    from .external_models import record
+    item=record(model_id)
+    encoder='ContentVec 768 L12' if item.get('encoder')=='vec768l12-onnx' else 'ContentVec 256 L9'
+    mode='可选浅扩散' if item.get('diffusion') else '基础生成器推理'
+    return f"**外部导入 · {escape(item['name'])}** · {escape(item['weight_name'])} · {encoder} · {mode}。请选择模型内歌手。"
+
+
 def import_choices():
     from .external_models import candidates
     rows, problems = candidates()
@@ -1239,17 +1252,16 @@ def build_page(busy=None):
             choices = [(f"第 {path.stem.split('_')[-1]} 步", str(path)) for path in service.checkpoints(model_id)]
             return (gr.update(choices=choices, value=choices[-1][1] if choices else None, visible=True),
                     gr.update(choices=[], value=None, visible=False),
-                    f"**自己训练 · {escape(record['name'])}** · 选择要使用的检查点。",
+                    conversion_description(selection),
                     gr.update(visible=False), gr.update(value=False), gr.update(value=35, maximum=100))
         if source == "imported":
             from .external_models import record
             item = record(model_id)
             choices = [(f"{name} · #{index}", name) for name, index in item["speakers"].items()]
-            encoder = "ContentVec 768 L12" if item.get("encoder") == "vec768l12-onnx" else "ContentVec 256 L9"
             has_diffusion = bool(item.get("diffusion"))
             return (gr.update(choices=[], value=None, visible=False),
                     gr.update(choices=choices, value=choices[0][1], visible=True),
-                    f"**外部导入 · {escape(item['name'])}** · {escape(item['weight_name'])} · {encoder} · {'可选浅扩散' if has_diffusion else '基础生成器推理'}。请选择模型内歌手。",
+                    conversion_description(selection),
                     gr.update(visible=has_diffusion), gr.update(value=False),
                     gr.update(value=min(35, int(item.get("diffusion_max_steps") or 100)),
                               maximum=int(item.get("diffusion_max_steps") or 100)))
@@ -1565,6 +1577,17 @@ def build_page(busy=None):
     job.change(selected_task_info, [job], [selected_job, task_result, retry_panel, selected_task_marker],
                queue=False, trigger_mode="always_last", show_progress="hidden")
 
+    @safe(outputs=2)
+    def refresh_model_labels(selection):
+        choices=conversion_choices()
+        current=selection if selection in {value for _,value in choices} else None
+        update=gr.update(choices=choices)
+        if current!=selection:update['value']=current
+        return update,conversion_description(current)
+
+    gr.on([conversion_tab.select,refresh.click],refresh_model_labels,[model_choice],[model_choice,model_details],
+          queue=False,trigger_mode='always_last',show_progress='hidden')
+
     @safe(outputs=7 + len(experiment_outputs) + len(poll_outputs))
     def refresh_workspace(current_singer, current_training_singer, current_model, current_job, current_experiment, kind, order, current_clip, previous_state, predictor):
         # One click produces one notification, even if multiple panels share bad metadata.
@@ -1575,10 +1598,11 @@ def build_page(busy=None):
         for component, value in zip([table, clip], clips[:2]):
             task_updates[poll_outputs.index(component)] = value
         return (*lists, gr.update(choices=singer_choices(), value=current_training_singer),
-                gr.update(choices=conversion_choices(), value=current_model), *details, clips[2], *task_updates)
+                gr.skip(), *details, clips[2], *task_updates)
 
     refresh.click(refresh_workspace,
                   [singer, training_singer, model_choice, job, experiment, review_filter, review_order, clip, polled_state, train_f0],
                   [singer, job, experiment, backend, training_singer, model_choice, *experiment_outputs, edits_download, *poll_outputs])
     refresh.click(listing, [*task_filters, task_page], task_outputs, queue=False)
-    return {"singer": singer, "job": job, "experiment": experiment, "checkpoint": checkpoint}
+    return {"singer": singer, "job": job, "experiment": experiment, "checkpoint": checkpoint,
+            "model_choice":model_choice,"model_details":model_details,"refresh_model_labels":refresh_model_labels}
