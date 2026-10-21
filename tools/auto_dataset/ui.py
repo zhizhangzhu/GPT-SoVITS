@@ -7,6 +7,7 @@ from pathlib import Path
 import gradio as gr
 
 from tools.assets import workspace_header
+from tools.workspace_resources import disk_summary
 from . import service
 
 
@@ -96,14 +97,28 @@ def clip_details(record, index):
             f'<div class="quality-note {"has-flags" if flags else ""}">{escape(quality)}</div>')
 
 
-def protect(fn):
-    @wraps(fn)
-    def wrapped(*args, **kwargs):
-        try:
-            return fn(*args, **kwargs)
-        except (ValueError, OSError) as exc:
-            raise gr.Error(str(exc)) from exc
-    return wrapped
+def protect(fn=None, *, outputs=1, status_index=None, success_index=None, timer_index=None, quiet=False):
+    def decorate(callback):
+        @wraps(callback)
+        def wrapped(*args, **kwargs):
+            try:
+                return callback(*args, **kwargs)
+            except (ValueError, OSError) as exc:
+                if not quiet:
+                    gr.Warning(escape(str(exc)), duration=5)
+                values = [gr.skip() for _ in range(outputs)]
+                if status_index is not None:
+                    title = "自动刷新已暂停" if timer_index is not None else "操作未完成"
+                    message = str(exc) + ("；请从任务列表重新选择任务以恢复刷新" if timer_index is not None else "")
+                    values[status_index] = ('<div class="task-status feedback-error" role="alert">'
+                                            '<strong>' + title + '</strong><p>' + escape(message) + '</p></div>')
+                if success_index is not None:
+                    values[success_index] = False
+                if timer_index is not None:
+                    values[timer_index] = gr.update(active=False)
+                return values[0] if outputs == 1 else tuple(values)
+        return wrapped
+    return decorate(fn) if fn is not None else decorate
 
 
 def save_current(value, current, text, language, selected):
@@ -123,7 +138,11 @@ def render(value, query="", kind="全部片段", current=None):
     index, record = next(((i, r) for i, r in matches if r["id"] == current), (0, None))
     options = [(f"{i + 1:04d} · {r['text'][:55] or '暂无标注'}", r["id"]) for i, r in matches]
     log_path = path / "worker.log"
-    log = log_path.read_text(encoding="utf-8", errors="replace")[-10000:] if log_path.exists() else ""
+    log = ""
+    if log_path.exists():
+        with log_path.open("rb") as stream:
+            stream.seek(max(0, log_path.stat().st_size - 16000))
+            log = stream.read().decode("utf-8", errors="replace")[-10000:]
     files = [str(p) for p in [path / "annotations.list", path / "train.list", path / "metadata.json"] if p.exists()]
     editing = ready and record is not None
     position = ids.index(current) if current in ids else -1
@@ -177,6 +196,7 @@ def build_page(busy=None):
                 previous = gr.Radio(label="已保存的任务", choices=history(), value=None,
                                     show_label=False, container=False, elem_classes="task-list")
                 reload_history = gr.Button("刷新任务列表", size="sm")
+                disk = gr.Markdown("数据输出：" + disk_summary(service.ROOT / "output"), elem_classes="workspace-hint")
                 gr.Markdown("任务和审核草稿保存在本地。刷新页面后，选择原任务即可继续。")
             with gr.Column(scale=8, min_width=480, elem_classes="dataset-main"):
                 status = gr.HTML('<div class="task-status"><strong>开始建立你的数据集</strong><p>新建任务，或从左侧选择已有任务继续审核。</p></div>')
@@ -188,6 +208,8 @@ def build_page(busy=None):
                             speaker = gr.Textbox(label="说话人名称", placeholder="例如：旁白小林", info="名称用于识别这份数据集，可包含中文。")
                         start = gr.Button("开始自动处理", variant="primary")
                         gr.Markdown("**完成后**：试听片段并修正标注 → 确认训练选用 → 送入训练数据格式化。支持中文、英文、日语、韩语和粤语。")
+                        with gr.Accordion("自动处理如何工作", open=False):
+                            gr.Markdown("本地工具执行人声分离、切片、ASR 识别与音频检查；Codex CLI 负责切片参数规划和 ASR 标注检查。需要本机 Codex 已安装并登录。模型版本沿用 CLI 配置，代码没有指定 GPT 版本。Codex 根据文件时长和标注数据工作，不直接试听音频。")
                     with gr.TabItem("音频审核", id="review"):
                         summary = gr.HTML(summary_html([]))
                         with gr.Row(elem_classes="review-controls"):
@@ -241,7 +263,7 @@ def build_page(busy=None):
     editor_inputs = [job_state, current_state, text, language, selected]
     view_inputs = [query, kind]
 
-    @protect
+    @protect(outputs=len(outputs), status_index=3)
     def start_task(files, name, query, kind):
         if busy and busy():
             raise ValueError("现有 GPU 训练或数据预处理正在运行，请结束后再开始自动数据集任务")
@@ -249,19 +271,19 @@ def build_page(busy=None):
         service.launch_job(value)
         return render(value, query, kind)
 
-    @protect
+    @protect(outputs=len(outputs), status_index=3)
     def retry_task(value, query, kind, current):
         if busy and busy():
             raise ValueError("请等待现有 GPU 训练或预处理结束")
         service.launch_job(value)
         return render(value, query, kind, current)
 
-    @protect
+    @protect(outputs=len(outputs), status_index=3)
     def load_task(target, value, current, text, language, selected, query, kind):
         save_current(value, current, text, language, selected)
         return render(target, query, kind)
 
-    @protect
+    @protect(outputs=len(outputs), status_index=3, timer_index=21, quiet=True)
     def refresh_task(value, query, kind, current):
         if not value:
             return tuple(gr.skip() for _ in outputs)
@@ -269,14 +291,14 @@ def build_page(busy=None):
         values[outputs.index(workspace)] = gr.skip()
         return tuple(values)
 
-    @protect
+    @protect(outputs=len(outputs), status_index=3)
     def filter_view(value, current, text, language, selected, query, kind):
         if not value:
             return tuple(gr.skip() for _ in outputs)
         save_current(value, current, text, language, selected)
         return render(value, query, kind, current)
 
-    @protect
+    @protect(outputs=len(outputs), status_index=3)
     def edit_clip(value, current, text, language, selected, view, direction=0, decision=None):
         query, kind = view["query"], view["kind"]
         _, records = service.snapshot(value)
@@ -284,13 +306,13 @@ def build_page(busy=None):
         save_current(value, current, text, language, selected if decision is None else decision)
         return render(value, query, kind, target)
 
-    @protect
+    @protect(outputs=len(outputs), status_index=3)
     def choose_clip(target, value, current, text, language, selected, view):
         query, kind = view["query"], view["kind"]
         save_current(value, current, text, language, selected)
         return render(value, query, kind, target)
 
-    @protect
+    @protect(outputs=len(outputs), status_index=3)
     def choose_row(value, current, text, language, selected, view, records, evt: gr.SelectData):
         row = evt.row_value
         if not records or not row or row[1] == "—":
@@ -302,12 +324,12 @@ def build_page(busy=None):
         target = records[original_index]["id"]
         return choose_clip(target, value, current, text, language, selected, view)
 
-    @protect
+    @protect(outputs=len(outputs) + 4, status_index=3)
     def open_new(value, current, text, language, selected):
         save_current(value, current, text, language, selected)
         return (*empty_view(), gr.update(value=None), "", "", gr.update(value=FILTERS[0]))
 
-    @protect
+    @protect(outputs=len(outputs), status_index=3)
     def reread_task(value, current, query, kind):
         service.import_annotations(value)
         return render(value, query, kind, current)
@@ -316,7 +338,8 @@ def build_page(busy=None):
     retry.click(retry_task, [job_state, query, kind, current_state], outputs, concurrency_limit=1, concurrency_id="auto_dataset_start")
     previous.input(load_task, [previous, *editor_inputs, *view_inputs], outputs)
     timer.tick(refresh_task, [job_state, query, kind, current_state], outputs, show_progress="hidden")
-    reload_history.click(lambda q: gr.update(choices=history(q)), task_search, previous)
+    reload_history.click(lambda q: (gr.update(choices=history(q)), "数据输出：" + disk_summary(service.ROOT / "output")),
+                         task_search, [previous, disk])
     task_search.submit(lambda q: gr.update(choices=history(q), value=None), task_search, previous)
     new_task.click(open_new, editor_inputs, [*outputs, upload, speaker, query, kind])
     kind.input(filter_view, [*editor_inputs, *view_inputs], outputs)
@@ -337,7 +360,9 @@ def build_page(busy=None):
 
 
 def bind_training(page, path_list, inp_text, inp_wav_dir, exp_name, open_editor):
-    @protect
+    handoff_ready = gr.State(False)
+
+    @protect(outputs=7, status_index=0, success_index=6)
     def save(value, current, text, language, selected):
         save_current(value, current, text, language, selected)
         _, records = service.snapshot(value)
@@ -346,7 +371,7 @@ def bind_training(page, path_list, inp_text, inp_wav_dir, exp_name, open_editor)
         path = service.job_dir(value)
         job, _ = service.snapshot(path)
         return (status_html(job), [str(path / "annotations.list"), annotation, str(path / "metadata.json")],
-                str(path / "annotations.list"), annotation, clips, experiment)
+                str(path / "annotations.list"), annotation, clips, experiment, True)
 
     @protect
     def external(value, current, text, language, selected):
@@ -358,6 +383,6 @@ def bind_training(page, path_list, inp_text, inp_wav_dir, exp_name, open_editor)
         return open_editor(str(path / "annotations.list"))
 
     event = page["save"].click(save, [page[k] for k in ("state", "current", "text", "language", "selected")],
-                              [page["status"], page["downloads"], path_list, inp_text, inp_wav_dir, exp_name])
+                              [page["status"], page["downloads"], path_list, inp_text, inp_wav_dir, exp_name, handoff_ready])
     page["external"].click(external, [page[k] for k in ("state", "current", "text", "language", "selected")], page["editor_info"])
-    return event
+    return event, handoff_ready

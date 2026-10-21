@@ -233,9 +233,8 @@ system = platform.system()
 
 def kill_process(pid, process_name=""):
     if system == "Windows":
-        cmd = "taskkill /t /f /pid %s" % pid
-        # os.system(cmd)
-        subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cmd = ["taskkill", "/t", "/f", "/pid", str(pid)]
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
         kill_proc_tree(pid)
     print(process_name + i18n("进程已终止"))
@@ -272,19 +271,15 @@ def change_label(path_list):
     if p_label is None:
         check_for_existance([path_list])
         path_list = my_utils.clean_path(path_list)
-        cmd = '"%s" -s tools/subfix_webui.py --load_list "%s" --webui_port %s --is_share %s' % (
-            python_exec,
-            path_list,
-            webui_port_subfix,
-            is_share,
-        )
+        cmd = [python_exec, "-s", "tools/subfix_webui.py", "--load_list", path_list,
+               "--webui_port_subfix", str(webui_port_subfix), "--is_share", str(is_share)]
         yield (
             process_info(process_name_subfix, "opened"),
             {"__type__": "update", "visible": False},
             {"__type__": "update", "visible": True},
         )
         print(cmd)
-        p_label = Popen(cmd, shell=True)
+        p_label = Popen(cmd)
     else:
         kill_process(p_label.pid, process_name_subfix)
         p_label = None
@@ -302,20 +297,15 @@ def change_uvr5():
     global p_uvr5
     if p_uvr5 is None:
         ensure_auto_dataset_idle()
-        cmd = '"%s" -s tools/uvr5/webui.py "%s" %s %s %s' % (
-            python_exec,
-            infer_device,
-            is_half,
-            webui_port_uvr5,
-            is_share,
-        )
+        cmd = [python_exec, "-s", "tools/uvr5/webui.py", str(infer_device),
+               str(is_half), str(webui_port_uvr5), str(is_share)]
         yield (
             process_info(process_name_uvr5, "opened"),
             {"__type__": "update", "visible": False},
             {"__type__": "update", "visible": True},
         )
         print(cmd)
-        p_uvr5 = Popen(cmd, shell=True)
+        p_uvr5 = Popen(cmd)
     else:
         kill_process(p_uvr5.pid, process_name_uvr5)
         p_uvr5 = None
@@ -340,12 +330,9 @@ def open_asr(asr_inp_dir, asr_opt_dir, asr_model, asr_model_size, asr_lang, asr_
         asr_inp_dir = my_utils.clean_path(asr_inp_dir)
         asr_opt_dir = my_utils.clean_path(asr_opt_dir)
         check_for_existance([asr_inp_dir])
-        cmd = f'"{python_exec}" -s tools/asr/{asr_dict[asr_model]["path"]}'
-        cmd += f' -i "{asr_inp_dir}"'
-        cmd += f' -o "{asr_opt_dir}"'
-        cmd += f" -s {asr_model_size}"
-        cmd += f" -l {asr_lang}"
-        cmd += f" -p {asr_precision}"
+        cmd = [python_exec, "-s", os.path.join("tools", "asr", asr_dict[asr_model]["path"]),
+               "-i", asr_inp_dir, "-o", asr_opt_dir, "-s", str(asr_model_size),
+               "-l", str(asr_lang), "-p", str(asr_precision)]
         output_file_name = os.path.basename(asr_inp_dir)
         output_folder = asr_opt_dir or "output/asr_opt"
         output_file_path = os.path.abspath(f"{output_folder}/{output_file_name}.list")
@@ -358,7 +345,7 @@ def open_asr(asr_inp_dir, asr_opt_dir, asr_model, asr_model_size, asr_lang, asr_
             {"__type__": "update"},
         )
         print(cmd)
-        p_asr = Popen(cmd, shell=True)
+        p_asr = Popen(cmd)
         p_asr.wait()
         p_asr = None
         yield (
@@ -402,12 +389,8 @@ def open_denoise(denoise_inp_dir, denoise_opt_dir):
         denoise_inp_dir = my_utils.clean_path(denoise_inp_dir)
         denoise_opt_dir = my_utils.clean_path(denoise_opt_dir)
         check_for_existance([denoise_inp_dir])
-        cmd = '"%s" -s tools/cmd-denoise.py -i "%s" -o "%s" -p %s' % (
-            python_exec,
-            denoise_inp_dir,
-            denoise_opt_dir,
-            "float16" if is_half == True else "float32",
-        )
+        cmd = [python_exec, "-s", "tools/cmd-denoise.py", "-i", denoise_inp_dir,
+               "-o", denoise_opt_dir, "-p", "float16" if is_half else "float32"]
 
         yield (
             process_info(process_name_denoise, "opened"),
@@ -417,7 +400,7 @@ def open_denoise(denoise_inp_dir, denoise_opt_dir):
             {"__type__": "update"},
         )
         print(cmd)
-        p_denoise = Popen(cmd, shell=True)
+        p_denoise = Popen(cmd)
         p_denoise.wait()
         p_denoise = None
         yield (
@@ -507,9 +490,9 @@ def open1Ba(
         with open(tmp_config_path, "w") as f:
             f.write(json.dumps(data))
         if version in ["v1", "v2", "v2Pro", "v2ProPlus"]:
-            cmd = '"%s" -s GPT_SoVITS/s2_train.py --config "%s"' % (python_exec, tmp_config_path)
+            cmd = [python_exec, "-s", "GPT_SoVITS/s2_train.py", "--config", tmp_config_path]
         else:
-            cmd = '"%s" -s GPT_SoVITS/s2_train_v3_lora.py --config "%s"' % (python_exec, tmp_config_path)
+            cmd = [python_exec, "-s", "GPT_SoVITS/s2_train_v3_lora.py", "--config", tmp_config_path]
         yield (
             process_info(process_name_sovits, "opened"),
             {"__type__": "update", "visible": False},
@@ -518,7 +501,7 @@ def open1Ba(
             {"__type__": "update"},
         )
         print(cmd)
-        p_train_SoVITS = Popen(cmd, shell=True)
+        p_train_SoVITS = Popen(cmd)
         p_train_SoVITS.wait()
         p_train_SoVITS = None
         SoVITS_dropdown_update, GPT_dropdown_update = change_choices()
@@ -601,8 +584,7 @@ def open1Bb(
         tmp_config_path = "%s/tmp_s1.yaml" % tmp
         with open(tmp_config_path, "w") as f:
             f.write(yaml.dump(data, default_flow_style=False))
-        # cmd = '"%s" GPT_SoVITS/s1_train.py --config_file "%s" --train_semantic_path "%s/6-name2semantic.tsv" --train_phoneme_path "%s/2-name2text.txt" --output_dir "%s/logs_s1"'%(python_exec,tmp_config_path,s1_dir,s1_dir,s1_dir)
-        cmd = '"%s" -s GPT_SoVITS/s1_train.py --config_file "%s" ' % (python_exec, tmp_config_path)
+        cmd = [python_exec, "-s", "GPT_SoVITS/s1_train.py", "--config_file", tmp_config_path]
         yield (
             process_info(process_name_gpt, "opened"),
             {"__type__": "update", "visible": False},
@@ -611,7 +593,7 @@ def open1Bb(
             {"__type__": "update"},
         )
         print(cmd)
-        p_train_GPT = Popen(cmd, shell=True)
+        p_train_GPT = Popen(cmd)
         p_train_GPT.wait()
         p_train_GPT = None
         SoVITS_dropdown_update, GPT_dropdown_update = change_choices()
@@ -679,22 +661,11 @@ def open_slice(inp, opt_root, threshold, min_length, min_interval, hop_size, max
         return
     if ps_slice == []:
         for i_part in range(n_parts):
-            cmd = '"%s" -s tools/slice_audio.py "%s" "%s" %s %s %s %s %s %s %s %s %s' % (
-                python_exec,
-                inp,
-                opt_root,
-                threshold,
-                min_length,
-                min_interval,
-                hop_size,
-                max_sil_kept,
-                _max,
-                alpha,
-                i_part,
-                n_parts,
-            )
+            cmd = [python_exec, "-s", "tools/slice_audio.py", inp, opt_root,
+                   *map(str, [threshold, min_length, min_interval, hop_size, max_sil_kept,
+                              _max, alpha, i_part, n_parts])]
             print(cmd)
-            p = Popen(cmd, shell=True)
+            p = Popen(cmd)
             ps_slice.append(p)
         yield (
             process_info(process_name_slice, "opened"),
@@ -775,9 +746,9 @@ def open1a(inp_text, inp_wav_dir, exp_name, gpu_numbers, bert_pretrained_dir):
                 }
             )
             os.environ.update(config)
-            cmd = '"%s" -s GPT_SoVITS/prepare_datasets/1-get-text.py' % python_exec
+            cmd = [python_exec, "-s", "GPT_SoVITS/prepare_datasets/1-get-text.py"]
             print(cmd)
-            p = Popen(cmd, shell=True)
+            p = Popen(cmd)
             ps1a.append(p)
         yield (
             process_info(process_name_1a, "running"),
@@ -866,9 +837,9 @@ def open1b(version, inp_text, inp_wav_dir, exp_name, gpu_numbers, ssl_pretrained
                 }
             )
             os.environ.update(config)
-            cmd = '"%s" -s GPT_SoVITS/prepare_datasets/2-get-hubert-wav32k.py' % python_exec
+            cmd = [python_exec, "-s", "GPT_SoVITS/prepare_datasets/2-get-hubert-wav32k.py"]
             print(cmd)
-            p = Popen(cmd, shell=True)
+            p = Popen(cmd)
             ps1b.append(p)
         yield (
             process_info(process_name_1b, "running"),
@@ -888,9 +859,9 @@ def open1b(version, inp_text, inp_wav_dir, exp_name, gpu_numbers, ssl_pretrained
                     }
                 )
                 os.environ.update(config)
-                cmd = '"%s" -s GPT_SoVITS/prepare_datasets/2-get-sv.py' % python_exec
+                cmd = [python_exec, "-s", "GPT_SoVITS/prepare_datasets/2-get-sv.py"]
                 print(cmd)
-                p = Popen(cmd, shell=True)
+                p = Popen(cmd)
                 ps1b.append(p)
             for p in ps1b:
                 p.wait()
@@ -961,9 +932,9 @@ def open1c(version, inp_text, inp_wav_dir, exp_name, gpu_numbers, pretrained_s2G
                 }
             )
             os.environ.update(config)
-            cmd = '"%s" -s GPT_SoVITS/prepare_datasets/3-get-semantic.py' % python_exec
+            cmd = [python_exec, "-s", "GPT_SoVITS/prepare_datasets/3-get-semantic.py"]
             print(cmd)
-            p = Popen(cmd, shell=True)
+            p = Popen(cmd)
             ps1c.append(p)
         yield (
             process_info(process_name_1c, "running"),
@@ -1062,9 +1033,9 @@ def open1abc(
                         }
                     )
                     os.environ.update(config)
-                    cmd = '"%s" -s GPT_SoVITS/prepare_datasets/1-get-text.py' % python_exec
+                    cmd = [python_exec, "-s", "GPT_SoVITS/prepare_datasets/1-get-text.py"]
                     print(cmd)
-                    p = Popen(cmd, shell=True)
+                    p = Popen(cmd)
                     ps1abc.append(p)
                 yield (
                     i18n("进度") + ": 1A-Doing",
@@ -1109,9 +1080,9 @@ def open1abc(
                     }
                 )
                 os.environ.update(config)
-                cmd = '"%s" -s GPT_SoVITS/prepare_datasets/2-get-hubert-wav32k.py' % python_exec
+                cmd = [python_exec, "-s", "GPT_SoVITS/prepare_datasets/2-get-hubert-wav32k.py"]
                 print(cmd)
-                p = Popen(cmd, shell=True)
+                p = Popen(cmd)
                 ps1abc.append(p)
             yield (
                 i18n("进度") + ": 1A-Done, 1B-Doing",
@@ -1131,9 +1102,9 @@ def open1abc(
                         }
                     )
                     os.environ.update(config)
-                    cmd = '"%s" -s GPT_SoVITS/prepare_datasets/2-get-sv.py' % python_exec
+                    cmd = [python_exec, "-s", "GPT_SoVITS/prepare_datasets/2-get-sv.py"]
                     print(cmd)
-                    p = Popen(cmd, shell=True)
+                    p = Popen(cmd)
                     ps1abc.append(p)
                 for p in ps1abc:
                     p.wait()
@@ -1171,9 +1142,9 @@ def open1abc(
                         }
                     )
                     os.environ.update(config)
-                    cmd = '"%s" -s GPT_SoVITS/prepare_datasets/3-get-semantic.py' % python_exec
+                    cmd = [python_exec, "-s", "GPT_SoVITS/prepare_datasets/3-get-semantic.py"]
                     print(cmd)
-                    p = Popen(cmd, shell=True)
+                    p = Popen(cmd)
                     ps1abc.append(p)
                 yield (
                     i18n("进度") + ": 1A-Done, 1B-Done, 1C-Doing",
@@ -1235,6 +1206,9 @@ def close1abc():
 
 
 def switch_version(version_):
+    if version_ not in pretrained_sovits_name or version_ not in pretrained_gpt_name:
+        gr.Warning("请选择有效的训练模型版本", duration=5)
+        return tuple(gr.skip() for _ in range(12))
     os.environ["version"] = version_
     global version
     version = version_
@@ -1266,8 +1240,8 @@ def switch_version(version_):
 if os.path.exists("GPT_SoVITS/text/G2PWModel"):
     ...
 else:
-    cmd = '"%s" -s GPT_SoVITS/download.py' % python_exec
-    p = Popen(cmd, shell=True)
+    cmd = [python_exec, "-s", "GPT_SoVITS/download.py"]
+    p = Popen(cmd)
     p.wait()
 
 
@@ -1278,6 +1252,9 @@ def sync(text):
 def ensure_auto_dataset_idle():
     from filelock import FileLock, Timeout
     from tools.auto_dataset.service import PROCESSES
+    from tools.svc.service import busy as svc_busy
+    if svc_busy():
+        raise gr.Error("SVC 任务正在运行或排队，请结束后再启动其他 GPU 任务")
     from tools.tts_workspace.service import service as tts_service
     if tts_service.lock.locked():
         raise gr.Error("推理模型正在加载或合成，请结束后再启动 GPU 任务")
@@ -1289,14 +1266,15 @@ def ensure_auto_dataset_idle():
         lock.acquire(timeout=0)
         lock.release()
     except Timeout:
-        raise gr.Error("全自动数据集任务正在使用 GPU，请结束后再启动训练或预处理")
+        raise gr.Error("数据整理或 SVC 任务正在使用 GPU，请结束后再启动训练或预处理")
 
 
-def auto_dataset_busy():
+def auto_dataset_busy(include_svc=True):
     processes = [p_train_SoVITS, p_train_GPT, p_asr, p_denoise, p_uvr5]
     processes += ps1a + ps1b + ps1c + ps1abc
     from tools.tts_workspace.service import service as tts_service
-    return tts_service.lock.locked() or any(p is not None and p.poll() is None for p in processes)
+    from tools.svc.service import busy as svc_busy
+    return (include_svc and svc_busy()) or tts_service.lock.locked() or any(p is not None and p.poll() is None for p in processes)
 
 
 def open_auto_dataset_editor(annotation_path):
@@ -1316,6 +1294,9 @@ def open_auto_dataset_editor(annotation_path):
 
 from tools.auto_dataset.ui import build_page as build_auto_dataset_page, bind_training as bind_auto_dataset_training
 from tools.tts_workspace.ui import build_page as build_tts_workspace
+from tools.svc.ui import build_page as build_svc_workspace
+from tools.svc.pitch_ui import build_page as build_pitch_workspace
+from tools.svc.downloads import router as svc_download_router
 
 
 with gr.Blocks(
@@ -2058,10 +2039,9 @@ with gr.Blocks(
             batched_infer_enabled = tts_workspace["parallel"]
             tts_workspace["refresh"].click(fn=change_choices, inputs=[], outputs=[SoVITS_dropdown, GPT_dropdown])
         with gr.TabItem("So-VITS-SVC", id="svc"):
-            gr.HTML(workspace_header("So-VITS-SVC · 音色转换", "独立的歌声音色数据集、专属模型训练和音频转换工作区。"))
-            gr.HTML(
-                '<div class="empty-workspace"><strong>功能开发中</strong>此入口用于后续 SVC 数据集准备、训练和转换流程。</div>'
-            )
+            svc_workspace = build_svc_workspace(busy=lambda: auto_dataset_busy(include_svc=False))
+        with gr.TabItem("一键校准", id="pitch"):
+            pitch_workspace = build_pitch_workspace(busy=lambda: auto_dataset_busy(include_svc=False))
 
     button1Ba_close.click(close1Ba, [], [info1Ba, button1Ba_open, button1Ba_close])
     button1Bb_close.click(close1Bb, [], [info1Bb, button1Bb_open, button1Bb_close])
@@ -2119,15 +2099,17 @@ with gr.Blocks(
         ],
     )
 
-    review_handoff = bind_auto_dataset_training(
+    review_handoff, review_handoff_ready = bind_auto_dataset_training(
         auto_dataset_page, path_list, inp_text, inp_wav_dir, exp_name, open_auto_dataset_editor
     )
     review_handoff.success(
-        lambda: (gr.update(selected="training"), gr.update(selected="format")),
+        lambda ready: (gr.update(selected="training"), gr.update(selected="format")) if ready else (gr.skip(), gr.skip()),
+        inputs=[review_handoff_ready],
         outputs=[workspace_navigation, training_workspace],
     )
 
     app.queue().launch(  # concurrency_count=511, max_size=1022
+        app_kwargs={"routes":svc_download_router.routes},
         server_name="0.0.0.0",
         inbrowser=True,
         share=is_share,

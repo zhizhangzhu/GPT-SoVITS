@@ -1,0 +1,23 @@
+# Install into runtime/svc-env, never over the TTS environment.
+# pyworld 0.3.5 still imports pkg_resources, removed by newer setuptools.
+setuptools>=77,<81
+numpy>=1.26,<2
+pyworld==0.3.5
+praat-parselmouth==0.4.7
+onnxruntime==1.23.2
+faiss-cpu==1.13.2
+librosa>=0.10,<0.11
+soundfile>=0.12,<0.15
+scipy>=1.10,<1.16
+scikit-learn>=1.2,<1.8
+filelock>=3.12
+huggingface-hub>=0.25,<1
+PyYAML>=6,<7
+tensorboard>=2.12
+modelscope>=1.37.1,<2
+einops>=0.8,<0.9
+rotary-embedding-torch>=0.9,<0.10
+
+torchfcpe==0.0.4
+local-attention==1.11.2
+hyper-connections==0.4.11

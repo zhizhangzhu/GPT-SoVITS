@@ -14,6 +14,7 @@ import uuid
 
 import psutil
 from filelock import FileLock
+from tools.workspace_resources import require_space
 
 ROOT = Path(__file__).resolve().parents[2]
 LANGUAGES = {"zh", "en", "ja", "ko", "yue"}
@@ -54,6 +55,11 @@ def create_job(files, speaker):
         files = [files]
     if not files:
         raise ValueError("请先上传音频")
+    sources = [Path(filename) for filename in files]
+    if any(not source.is_file() for source in sources):
+        raise ValueError("上传文件不存在")
+    require_space(ROOT / "input", sum(source.stat().st_size for source in sources), "保存上传素材")
+    require_space(ROOT / "output", purpose="创建数据集任务")
     slug = re.sub(r"[^\w-]", "_", speaker).strip("_.") or "voice"
     task_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
     inputs = ROOT / "input" / slug / task_id
@@ -87,6 +93,7 @@ def launch_job(value):
             raise ValueError("这个任务的后台进程仍在处理中，请查看当前任务")
         if job["status"] not in {"queued", "failed", "cancelled"}:
             raise ValueError("任务已完成，请审核结果或创建新任务")
+        require_space(path, purpose="启动自动数据集任务")
         (path / "cancel").unlink(missing_ok=True)
         job.update(status="queued", stage="等待 GPU 队列", progress=0, message="正在排队", pid=None)
         atomic_json(path / "job.json", job)
@@ -119,6 +126,10 @@ def snapshot(value):
     elif not proc and job.get("pid") and job["status"] not in TERMINAL and not worker_alive(job, path):
         job.update(status="failed", message="后台进程已结束；已完成步骤保留，可重试")
         atomic_json(path / "job.json", job)
+    if proc and proc.poll() is not None:
+        with PROCESS_LOCK:
+            if PROCESSES.get(str(path)) is proc:
+                PROCESSES.pop(str(path), None)
     records = read_json(path / "metadata.json") if (path / "metadata.json").exists() else []
     return job, records
 

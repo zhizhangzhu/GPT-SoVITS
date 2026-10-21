@@ -7,6 +7,8 @@ runtime
 .idea
 output
 input/
+svc_data/
+svc_experiments/
 logs
 SoVITS_weights*/
 GPT_weights*/
@@ -194,3 +196,10 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Local download tooling and external model bundle
+.local-tools/
+GPT-SoVITS-Inference/
+svc_imports/
+/Ai异世界情绪.zip
+/诗歌剧模型文件+参考音频.7z

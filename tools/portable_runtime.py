@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from importlib import import_module
 from importlib.machinery import ModuleSpec
@@ -14,8 +15,22 @@ from types import ModuleType
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_DIR = PROJECT_ROOT / "runtime"
 SITE_PACKAGES = RUNTIME_DIR / "Lib" / "site-packages"
-FFMPEG_EXE = RUNTIME_DIR / "ffmpeg.exe"
-FFPROBE_EXE = RUNTIME_DIR / "ffprobe.exe"
+
+
+def _media_executable(name: str) -> Path:
+    bundled = RUNTIME_DIR / f"{name}.exe"
+    if bundled.is_file():
+        return bundled
+    environment = Path(sys.prefix) / ("Scripts" if os.name == "nt" else "bin") / (
+        f"{name}.exe" if os.name == "nt" else name
+    )
+    if environment.is_file():
+        return environment
+    return Path(shutil.which(name) or name)
+
+
+FFMPEG_EXE = _media_executable("ffmpeg")
+FFPROBE_EXE = _media_executable("ffprobe")
 _DLL_HANDLES = []
 _DLL_READY = False
 _ACTIVE = False

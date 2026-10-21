@@ -13,6 +13,7 @@ import gradio as gr
 from tools import assets
 from tools.auto_dataset import service, ui
 from tools.tts_workspace.ui import build_page as build_tts_workspace
+from tools.svc.ui import build_page as build_svc_workspace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,7 +46,8 @@ def build_ui(file, model_version="v2Pro"):
         i18n=lambda text: text, process_info=lambda name, mode: name + " · " + mode,
         build_auto_dataset_page=ui.build_page, bind_auto_dataset_training=ui.bind_training,
         build_tts_workspace=build_tts_workspace,
-        auto_dataset_busy=lambda: False, open_auto_dataset_editor=lambda path: path,
+        build_svc_workspace=build_svc_workspace,
+        auto_dataset_busy=lambda include_svc=True: False, open_auto_dataset_editor=lambda path: path,
         version=model_version, model_version=model_version, v3v4set={"v3", "v4", "v5dev", "v5turbo"},
         V5_VERSIONS={"v5dev", "v5turbo"}, gpu_info="测试设备", gpus="0", n_cpu=4,
         default_batch_size=2, default_max_batch_size=6, default_batch_size_s1=2,
